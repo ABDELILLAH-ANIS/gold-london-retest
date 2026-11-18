@@ -154,15 +154,71 @@ def fetch_live_gold_bars() -> tuple[list[dict], str]:
     raise RuntimeError("All Gold M15 feeds failed: " + " | ".join(errors))
 
 
+NEWS_CACHE_PATH = os.path.join(BASE_DIR, "news_cache.json")
+_NEWS_CACHE: dict = {"fetched_at": 0.0, "events": None, "last_fail_at": 0.0}
+
+
+def _load_weekly_news_events() -> tuple[list[dict] | None, str]:
+    """Load ForexFactory weekly calendar with 6-hour memory/disk cache to avoid 429 rate limits."""
+    now_ts = time.time()
+    ttl = 6 * 3600
+
+    if _NEWS_CACHE["events"] is not None and (now_ts - _NEWS_CACHE["fetched_at"]) < ttl:
+        return _NEWS_CACHE["events"], "cached"
+
+    if os.path.exists(NEWS_CACHE_PATH):
+        try:
+            with open(NEWS_CACHE_PATH, "r", encoding="utf-8") as fh:
+                disk = json.load(fh)
+            if isinstance(disk.get("events"), list) and (now_ts - float(disk.get("fetched_at", 0.0))) < ttl:
+                _NEWS_CACHE["events"] = disk["events"]
+                _NEWS_CACHE["fetched_at"] = float(disk["fetched_at"])
+                return _NEWS_CACHE["events"], "disk-cached"
+        except Exception:
+            pass
+
+    if (now_ts - _NEWS_CACHE["last_fail_at"]) < 1800 and _NEWS_CACHE["events"] is not None:
+        return _NEWS_CACHE["events"], "stale-cached"
+
+    urls = (
+        "https://nfs.faireconomy.media/ff_calendar_thisweek.json",
+        "https://cdn-nfs.faireconomy.media/ff_calendar_thisweek.json",
+    )
+    last_err = ""
+    for url in urls:
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/126.0 Safari/537.36",
+                "Accept": "application/json",
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                events = json.loads(resp.read().decode("utf-8"))
+            if isinstance(events, list):
+                _NEWS_CACHE["events"] = events
+                _NEWS_CACHE["fetched_at"] = now_ts
+                try:
+                    with open(NEWS_CACHE_PATH, "w", encoding="utf-8") as fh:
+                        json.dump({"fetched_at": now_ts, "events": events}, fh)
+                except Exception:
+                    pass
+                return events, "live"
+        except Exception as exc:
+            last_err = str(exc)
+
+    _NEWS_CACHE["last_fail_at"] = now_ts
+    if _NEWS_CACHE["events"] is not None:
+        return _NEWS_CACHE["events"], "stale-cached"
+    return None, last_err
+
+
 def check_usd_high_impact_news(now_alg: datetime.datetime) -> tuple[bool, str]:
     """Check ForexFactory weekly feed for USD High-Impact events within +/- 60 minutes."""
-    url = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            events = json.loads(resp.read().decode("utf-8"))
-    except Exception as exc:
-        return False, f"Calendar unavailable ({exc})"
+    events, err_or_mode = _load_weekly_news_events()
+    if events is None:
+        return False, f"Calendar unavailable ({err_or_mode})"
 
     keywords = ("CPI", "NFP", "NON-FARM", "NONFARM", "FOMC", "FED", "POWELL", "PPI", "GDP", "PCE", "GOLD")
     for ev in events:
