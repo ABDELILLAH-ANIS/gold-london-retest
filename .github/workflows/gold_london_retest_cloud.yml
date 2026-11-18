@@ -1,0 +1,27 @@
+name: Gold London Retest 24/7 Cloud Scanner
+
+on:
+  schedule:
+    # Runs Monday-Friday at 07:55 UTC = 08:55 Algiers Time (GMT+1)
+    - cron: "55 7 * * 1-5"
+  workflow_dispatch:
+
+jobs:
+  london-session-scanner:
+    runs-on: ubuntu-latest
+    timeout-minutes: 210
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run Gold London Retest Scanner (09:00-12:00 Algiers Time)
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python cloud_scanner.py --session-loop

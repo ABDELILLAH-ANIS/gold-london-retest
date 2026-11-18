@@ -1,0 +1,9 @@
+# Local SQLite database and daily runtime state (contains Telegram credentials locally)
+gold_london_retest.db
+cloud_state.json
+
+# Python bytecode & environment files
+__pycache__/
+*.pyc
+.env
+*.log
