@@ -7,9 +7,11 @@ NEVER executes trades automatically.
 
 import argparse
 import datetime
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 import sqlite3
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -19,6 +21,8 @@ from gold_london_retest_db import DB_PATH, get_connection, init_db, send_telegra
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATE_PATH = os.path.join(BASE_DIR, "cloud_state.json")
 ALGIERS_TZ = datetime.timezone(datetime.timedelta(hours=1))
+_SCAN_LOCK = threading.Lock()
+_LAST_STATUS: dict | None = None
 
 
 def load_telegram_credentials() -> tuple[str, str]:
@@ -535,6 +539,15 @@ def run_session_loop(strict_mode: bool = False) -> None:
         time.sleep(wait_s)
 
 
+def _safe_evaluate(strict_mode: bool = False, dry_run: bool = False, status_report: bool = False) -> dict:
+    """Thread-safe evaluation wrapper updating cached _LAST_STATUS."""
+    global _LAST_STATUS
+    with _SCAN_LOCK:
+        res = evaluate_once(strict_mode=strict_mode, dry_run=dry_run, status_report=status_report)
+        _LAST_STATUS = res
+        return res
+
+
 def run_daemon(strict_mode: bool = False) -> None:
     """Continuous 24/7 cloud daemon (for VPS, Railway, Render, Fly.io)."""
     print("Starting 24/7 Gold London Retest Cloud Daemon...")
@@ -542,7 +555,7 @@ def run_daemon(strict_mode: bool = False) -> None:
         now_alg = datetime.datetime.now(ALGIERS_TZ)
         if now_alg.weekday() < 5 and 8 <= now_alg.hour <= 12:
             try:
-                evaluate_once(strict_mode=strict_mode, status_report=True)
+                _safe_evaluate(strict_mode=strict_mode, status_report=True)
             except Exception as exc:
                 print(f"[Error] {exc}")
             time.sleep(seconds_until_next_m15_close(datetime.datetime.now(datetime.timezone.utc)))
@@ -550,22 +563,103 @@ def run_daemon(strict_mode: bool = False) -> None:
             time.sleep(300)
 
 
+def _render_dashboard_html(st: dict | None) -> str:
+    """Render a minimal dark status page for Render Web Service root path."""
+    if not st:
+        body = "<p>Scanner warming up... Refresh or call <a href='/scan'>/scan</a>.</p>"
+    else:
+        body = (
+            f"<ul>"
+            f"<li><b>Algiers Time (GMT+1):</b> {st['now_algiers']}</li>"
+            f"<li><b>Data Source:</b> {st['data_source']} (Bar: {st['closed_bar_ts']})</li>"
+            f"<li><b>Gold Price / EMA50 / RSI14:</b> ${st['close_price']} | EMA50: {st['ema50']} | RSI(14): {st['rsi14']}</li>"
+            f"<li><b>Asia Range:</b> H ${st['asia_high']} / L ${st['asia_low']} (Width: ${st['asia_width']}, Valid: {st['asia_valid']})</li>"
+            f"<li><b>News (+/-60m):</b> {st['news_status']}</li>"
+            f"<li><b>Alerts Today / Losses:</b> {st['alerts_today']}/2 | Losses: {st['losses_today']}/2</li>"
+            f"<li><b>Status:</b> {st['action_note']}</li>"
+            f"</ul>"
+        )
+    return (
+        "<!doctype html><html><head><meta charset='utf-8'>"
+        "<title>Gold London Retest - Render Cloud Scanner</title>"
+        "<style>body{font-family:system-ui,sans-serif;background:#0e121a;color:#e5e7eb;padding:24px;max-width:720px;margin:auto;}"
+        "a{color:#38bdf8;}li{margin:8px 0;}</style></head><body>"
+        "<h2>Gold London Retest (XAUUSD M15) — Render Cloud Scanner</h2>"
+        "<p>FTM 2 Step Plus $5K | Manual Entry Only | 09:00-12:00 Algiers Time</p>"
+        f"{body}"
+        "<p><a href='/scan'>Run /scan now</a> | <a href='/health'>/health</a></p>"
+        "</body></html>"
+    )
+
+
+def run_web_server(strict_mode: bool = False) -> None:
+    """Run HTTP status/health/scan server + 24/7 scanner thread for Render Free Web Service."""
+    port = int(os.environ.get("PORT", "10000"))
+    try:
+        _safe_evaluate(strict_mode=strict_mode, status_report=True)
+    except Exception as exc:
+        print(f"[Startup scan note] {exc}")
+
+    worker = threading.Thread(target=run_daemon, args=(strict_mode,), daemon=True)
+    worker.start()
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            path = self.path.split("?", 1)[0]
+            if path == "/health":
+                payload = json.dumps({"status": "ok", "service": "gold-london-retest"}).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(payload)
+            elif path == "/scan":
+                try:
+                    res = _safe_evaluate(strict_mode=strict_mode)
+                    payload = json.dumps(res, indent=2).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(payload)
+                except Exception as exc:
+                    payload = json.dumps({"error": str(exc)}).encode("utf-8")
+                    self.send_response(500)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(payload)
+            else:
+                html = _render_dashboard_html(_LAST_STATUS).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(html)
+
+        def log_message(self, format: str, *args) -> None:
+            return
+
+    server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
+    print(f"Render Web Scanner listening on 0.0.0.0:{port}")
+    server.serve_forever()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Gold London Retest 24/7 Cloud Scanner")
     parser.add_argument("--once", action="store_true", help="Evaluate latest closed M15 candle once and exit")
     parser.add_argument("--session-loop", action="store_true", help="Run continuously through 12:05 Algiers Time")
     parser.add_argument("--daemon", action="store_true", help="Run 24/7 continuously")
+    parser.add_argument("--web", action="store_true", help="Run HTTP server + 24/7 scanner thread (Render)")
     parser.add_argument("--strict", action="store_true", help="Use strict $4-$15 / $3 SL mode instead of 2026 preset")
     parser.add_argument("--dry-run", action="store_true", help="Evaluate without sending Telegram messages")
     parser.add_argument("--status-report", action="store_true", help="Print JSON diagnostic snapshot")
     args = parser.parse_args()
 
-    if args.session_loop:
+    if args.web:
+        run_web_server(strict_mode=args.strict)
+    elif args.session_loop:
         run_session_loop(strict_mode=args.strict)
     elif args.daemon:
         run_daemon(strict_mode=args.strict)
     else:
-        evaluate_once(strict_mode=args.strict, dry_run=args.dry_run, status_report=args.status_report or args.once)
+        _safe_evaluate(strict_mode=args.strict, dry_run=args.dry_run, status_report=args.status_report or args.once)
 
 
 if __name__ == "__main__":
