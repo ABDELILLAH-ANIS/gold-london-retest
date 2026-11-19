@@ -74,7 +74,7 @@ def fetch_from_binance() -> tuple[list[dict], str]:
     """Fetch 250 M15 bars of PAXGUSDT spot Gold proxy from Binance."""
     url = "https://api.binance.com/api/v3/klines?symbol=PAXGUSDT&interval=15m&limit=250"
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(req, timeout=12) as resp:
+    with urllib.request.urlopen(req, timeout=6) as resp:
         data = json.loads(resp.read().decode("utf-8"))
     bars = []
     for k in data:
@@ -96,7 +96,7 @@ def fetch_from_okx() -> tuple[list[dict], str]:
     """Fetch 250 M15 bars of PAXG-USDT from OKX (works on US cloud runners)."""
     url = "https://www.okx.com/api/v5/market/candles?instId=PAXG-USDT&bar=15m&limit=250"
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(req, timeout=12) as resp:
+    with urllib.request.urlopen(req, timeout=6) as resp:
         payload = json.loads(resp.read().decode("utf-8"))
     rows = list(reversed(payload.get("data", [])))
     bars = []
@@ -119,7 +119,7 @@ def fetch_from_yahoo() -> tuple[list[dict], str]:
     """Fetch 5-day M15 bars of Gold Futures (GC=F) from Yahoo Finance."""
     url = "https://query1.finance.yahoo.com/v8/finance/chart/GC=F?interval=15m&range=5d"
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(req, timeout=12) as resp:
+    with urllib.request.urlopen(req, timeout=6) as resp:
         payload = json.loads(resp.read().decode("utf-8"))
     res = payload["chart"]["result"][0]
     q = res["indicators"]["quote"][0]
@@ -142,9 +142,9 @@ def fetch_from_yahoo() -> tuple[list[dict], str]:
 
 
 def fetch_live_gold_bars() -> tuple[list[dict], str]:
-    """Fetch M15 Gold bars with automatic multi-provider cloud failover."""
+    """Fetch M15 Gold bars with automatic multi-provider cloud failover (OKX first for cloud runners)."""
     errors = []
-    for fetcher in (fetch_from_binance, fetch_from_okx, fetch_from_yahoo):
+    for fetcher in (fetch_from_okx, fetch_from_yahoo, fetch_from_binance):
         try:
             bars, src = fetcher()
             if len(bars) >= 60:
@@ -403,7 +403,7 @@ def evaluate_once(strict_mode: bool = False, dry_run: bool = False, status_repor
     is_weekday = now_alg.weekday() < 5
     if (
         is_weekday
-        and now_alg.hour == 12
+        and 12 <= now_alg.hour <= 13
         and state["alerts_today"] == 0
         and not state["sent_no_setup_msg"]
         and not dry_run
@@ -609,7 +609,7 @@ def run_daemon(strict_mode: bool = False) -> None:
     print("Starting 24/7 Gold London Retest Cloud Daemon...")
     while True:
         now_alg = datetime.datetime.now(ALGIERS_TZ)
-        if now_alg.weekday() < 5 and 8 <= now_alg.hour <= 12:
+        if now_alg.weekday() < 5 and 8 <= now_alg.hour <= 13:
             try:
                 _safe_evaluate(strict_mode=strict_mode, status_report=True)
             except Exception as exc:
@@ -617,6 +617,21 @@ def run_daemon(strict_mode: bool = False) -> None:
             time.sleep(seconds_until_next_m15_close(datetime.datetime.now(datetime.timezone.utc)))
         else:
             time.sleep(300)
+
+
+def _trigger_async_scan(strict_mode: bool = False) -> bool:
+    """Launch a background evaluation immediately without blocking HTTP callers."""
+    if _SCAN_LOCK.locked():
+        return False
+
+    def _job() -> None:
+        try:
+            _safe_evaluate(strict_mode=strict_mode, status_report=True)
+        except Exception as exc:
+            print(f"[Async scan error] {exc}")
+
+    threading.Thread(target=_job, daemon=True).start()
+    return True
 
 
 def _render_dashboard_html(st: dict | None) -> str:
@@ -643,21 +658,14 @@ def _render_dashboard_html(st: dict | None) -> str:
         "<h2>Gold London Retest (XAUUSD M15) — Render Cloud Scanner</h2>"
         "<p>FTM 2 Step Plus $5K | Manual Entry Only | 09:00-12:00 Algiers Time</p>"
         f"{body}"
-        "<p><a href='/scan'>Run /scan now</a> | <a href='/health'>/health</a></p>"
+        "<p><a href='/scan'>Trigger /scan</a> | <a href='/scan-sync'>Sync /scan-sync</a> | <a href='/health'>/health</a></p>"
         "</body></html>"
     )
 
 
 def run_web_server(strict_mode: bool = False) -> None:
-    """Run HTTP status/health/scan server + 24/7 scanner thread for Render Free Web Service."""
+    """Run fast non-blocking HTTP server + 24/7 scanner thread for Render Free Web Service."""
     port = int(os.environ.get("PORT", "10000"))
-    try:
-        _safe_evaluate(strict_mode=strict_mode, status_report=True)
-    except Exception as exc:
-        print(f"[Startup scan note] {exc}")
-
-    worker = threading.Thread(target=run_daemon, args=(strict_mode,), daemon=True)
-    worker.start()
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
@@ -669,6 +677,18 @@ def run_web_server(strict_mode: bool = False) -> None:
                 self.end_headers()
                 self.wfile.write(payload)
             elif path == "/scan":
+                started = _trigger_async_scan(strict_mode=strict_mode)
+                resp_obj = {
+                    "status": "ok",
+                    "scan_triggered": started,
+                    "last_snapshot": _LAST_STATUS,
+                }
+                payload = json.dumps(resp_obj, indent=2).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(payload)
+            elif path == "/scan-sync":
                 try:
                     res = _safe_evaluate(strict_mode=strict_mode)
                     payload = json.dumps(res, indent=2).encode("utf-8")
@@ -683,6 +703,8 @@ def run_web_server(strict_mode: bool = False) -> None:
                     self.end_headers()
                     self.wfile.write(payload)
             else:
+                if _LAST_STATUS is None:
+                    _trigger_async_scan(strict_mode=strict_mode)
                 html = _render_dashboard_html(_LAST_STATUS).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -693,6 +715,8 @@ def run_web_server(strict_mode: bool = False) -> None:
             return
 
     server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
+    _trigger_async_scan(strict_mode=strict_mode)
+    threading.Thread(target=run_daemon, args=(strict_mode,), daemon=True).start()
     print(f"Render Web Scanner listening on 0.0.0.0:{port}")
     server.serve_forever()
 
