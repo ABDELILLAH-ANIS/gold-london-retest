@@ -790,8 +790,11 @@ void UpdateDashboard(const MarketProfile &mp, const datetime nowAlgiers, const d
 //+------------------------------------------------------------------+
 int OnInit()
 {
-   if(_Period != PERIOD_M15)
-      Alert("[LondonRetest] Please attach this indicator to an M15 chart ONLY!");
+   if(_Period != PERIOD_M15 && !MQLInfoInteger(MQL_TESTER))
+   {
+      Print("[LondonRetest] Auto-switching ", _Symbol, " chart to M15 timeframe...");
+      ChartSetSymbolPeriod(0, _Symbol, PERIOD_M15);
+   }
 
    if(!IsSupportedMarket())
       Print("[LondonRetest] Note: Symbol ", _Symbol, " uses XAUUSD default bounds. Supported native profiles: XAUUSD, EURUSD, GBPUSD, US100, BTCUSD.");
