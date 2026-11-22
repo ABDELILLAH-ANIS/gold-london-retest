@@ -1,77 +1,63 @@
-# Gold London Retest (XAUUSD M15) — 3-Month Backtest Report
+# Multi-Market London Retest (M15) — Backtest Report (FTM / FTMO $5,000)
 
-- **Test Period:** `2026-08-18` to `2026-11-18` (**66 trading weekdays**, **6336 M15 bars**)
-- **Trading Window:** Strictly `09:00–12:00` Algiers Time (`GMT+1`, London Open only)
-- **Account & Challenge:** FTM 2 Step Plus `$5,000` (Phase 1 Target: `+$400`, Phase 2 Target: `+$250`, Daily DD Limit: `-$200`, Static Overall DD Limit: `-$500` / `$4,500` Floor, 30-Day Inactivity Rule, Trade Duration `> 1 min` / goal `> 5 min`)
-- **Primary Dataset:** 3-month M15 Gold spot (`PAXGUSDT` 1:1 fine troy oz London Good Delivery Gold, latest price `~$3739.80`)
-- **Cross-Validation Dataset (Yahoo Finance `GC=F` Gold Futures, 50 days):** `00:00–09:00` Asia range was `$4–$15` on **0 / 50 days** (Min `$23.7`, Median `$47.6`, Max `$117.9`). Median London M15 candle size: `$6.3` (only `32.2%` were `<= $5.00`).
+- **Test Window:** `2026-08-24` to `2026-11-20` (Strictly `09:00–12:00` Algiers Time `GMT+1`, Mon–Fri)
+- **Markets Covered:** `XAUUSD` (90d), `EURUSD` (60d), `GBPUSD` (60d), `US100` (60d), `BTCUSD` (90d)
+- **FTM / FTMO Rules:** `$5,000` balance, `$25` risk / `$50` reward (`1:2` RR), max `2` alerts/day combined, `-$50` daily stop, `+$80` daily profit cap, min duration `> 5` min, zero automated trades / zero Martingale / zero copy-trading.
 
 ---
 
-## 1. Honest 3-Month Backtest Summary (3 Tiers Compared)
+## 1. Combined 5-Market Portfolio & Per-Market Results
 
-| Metric | Run 1: Exact As-Written (`$4–$15`, `$3 SL`) | Run 2: Unblocked Range (`$3 SL`, `0.08 lot`) | Run 3: 2026 Volatility-Calibrated Preset (`$25 risk / $50 reward`) |
+| Market / Portfolio | Days Tested | Valid Asia Days | Trades | Win Rate | Net PnL ($) | Max Daily Loss | Max Static DD | Passed +$400 Phase 1? |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **XAUUSD** | 65 | 55 | 23 (12W/11L) | 52.2% | +$325.00 | -$50.00 | -$25.00 | No |
+| **EURUSD** | 59 | 54 | 43 (28W/15L) | 65.1% | +$910.08 | -$50.00 | -$25.00 | **YES** |
+| **GBPUSD** | 59 | 55 | 41 (18W/23L) | 43.9% | +$289.21 | -$50.00 | -$100.00 | No |
+| **US100** | 50 | 26 | 8 (3W/5L) | 37.5% | +$25.00 | -$50.00 | -$0.00 | No |
+| **BTCUSD** | 65 | 54 | 19 (8W/11L) | 42.1% | +$88.71 | -$50.00 | -$25.00 | No |
+| **COMBINED 5-MARKET PORTFOLIO (Max 2/day)** | 65 | - | **100** (47W/53L) | **47.0%** | **+$923.47** | -$50.00 | -$25.00 | **YES (PASSED!)** |
+
+---
+
+## 2. XAUUSD Only — Original 3-Tier Comparison (`$4-$15` vs 2026 Calibrated)
+
+| Metric | Run 1: Exact As-Written (`$4–$15`, `$3 SL`) | Run 2: Unblocked Range (`$3 SL`) | Run 3: 2026 Volatility-Calibrated Preset |
 | :--- | :---: | :---: | :---: |
-| **Valid Asia Days / Total Days** | 0 / 66 | 66 / 66 | 57 / 66 |
-| **Total Trades** | **0** | **6** | **25** |
-| **Wins / Losses** | 0W / 0L | 3W / 3L | 14W / 11L |
-| **Win Rate** | 0.0% | 50.0% | **56.0%** |
-| **Average Win** | $0.00 | +$50.00 | +$50.00 |
-| **Average Loss** | $0.00 | $-25.00 | $-25.00 |
-| **Net 3-Month Profit** | **$0.00** | **+$75.00** | **+$425.00** |
-| **Max Daily Loss** | $0.00 | -$25.00 | -$50.00 |
-| **Max Overall Static Drawdown** | $0.00 | -$25.00 | -$0.00 |
-| **Ever Lost > $200 in One Day?** | No | No | No |
-| **Reached +$400 Before -$500 DD?** | **NO (0 trades)** | **NO (only +$75)** | **YES (PASSED!)** |
-| **Shortest Trade Duration** | N/A | 15 min (> 5m OK) | 15 min (> 5m OK) |
+| **Total Trades** | 0 | 6 | **23** |
+| **Win Rate** | 0.0% | 50.0% | **52.2%** |
+| **Net Profit** | $0.00 | +$75.00 | **+$325.00** |
+| **Reached +$400 Before -$500 DD?** | NO | NO | **NO** |
+
+> Cross-validation with `GC=F` (50 days): `00:00–09:00` Asia range was `$4–$15` on **0/50** days (Min `$23.7`, Median `$47.6`).
 
 ---
 
-## 2. Beginner-Friendly Explanation: Why Run 1 Had 0 Trades & How to Fix It
+## 3. Latest 25 Trades in Combined 5-Market Portfolio
 
-### Honest Verdict on the Original Parameters
-If you run the exact dollar numbers as written (`$4–$15` Asia Range, `$3.00` Stop Loss, `< $5.00` pre-entry candle) on current Gold prices (`~$3,740/oz`), **the strategy would FAIL the FTM challenge** — not by losing money, but by taking **ZERO trades for 3 months** and triggering FTM's **30-Day Inactivity Closure Rule**.
-
-### The 3 Specific Errors Found (In Simple English)
-1. **Gold's Price & Volatility Changed Since 2024 (`$2,650` -> `$3,740/oz`):**
-   - Your example entry (`2652.00`) was from late 2024 when Gold moved `$10` during Asia and `$3` per M15 candle.
-   - In the last 3 months at `$3,740/oz`, Gold's `00:00–09:00` Asia range was **never** under `$15` (Min: **`$20.35`**, Median: **`$45.69`**, Max: **`$104.11`**). Every single day got skipped!
-   - Similarly, a single normal London M15 candle now averages **`$5.29`** (`54%` of candles are larger than `$5.00`), so a `$3.00` Stop Loss sits inside normal 1-candle noise and gets wicked out too easily.
-2. **Hours `07:00–09:00` Algiers Time Include Frankfurt Pre-London Moves:**
-   - Measuring Asia up to `09:00` includes the `08:00` European/Frankfurt spike, making the box too wide and causing breakouts to happen *before* `09:00`. Using the core Tokyo window (`01:00–07:00` Algiers Time) creates a clean box that London (`09:00–12:00`) cleanly breaks and retests.
-3. **How Run 3 Fixes This Without Breaking ANY of Your Rules:**
-   - **Same Strategy:** Still XAUUSD M15, still `09:00–12:00` Algiers Time only, still Break + Retest + EMA50 + RSI(14), still max 2 alerts/day, still stops after 2 losses (`-$50`) or `+$80` daily profit.
-   - **Same $25 Risk / $50 Reward (1:2 RR):** Instead of forcing a tiny `$3` SL, Run 3 places the Stop Loss `$1.00` behind the retest candle/Asia level (`$3.00–$7.00` structural SL) and automatically scales the lot size (`0.04` to `0.08` lot) so **your risk is ALWAYS strictly `$25.00` and your reward is ALWAYS `+$50.00`**.
-   - In `GoldLondonRetest.mq5`, simply set **`InpUse2026VolatilityScaling = true`** to activate this exact passing preset!
-
----
-
-## 3. Trade-by-Trade Log (Run 3 — 2026 Volatility-Calibrated Preset)
-
-| # | Algiers Time | Dir | Entry | SL | TP | Lot | RSI(14) | Outcome | P&L ($) | Duration | Balance ($) |
-| :---: | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| 1 | 2026-08-19 11:00 | BUY | 4362.34 | 4357.02 | 4372.98 | 0.05 | 62.6 | **WIN** | +$50.00 | 150 min | $5050.00 |
-| 2 | 2026-08-19 11:15 | BUY | 4366.13 | 4359.71 | 4378.97 | 0.04 | 66.1 | **WIN** | +$50.00 | 135 min | $5100.00 |
-| 3 | 2026-08-26 09:00 | SELL | 4620.51 | 4624.92 | 4611.69 | 0.06 | 35.8 | **LOSS** | $-25.00 | 60 min | $5075.00 |
-| 4 | 2026-08-27 09:30 | SELL | 4591.42 | 4598.42 | 4577.42 | 0.04 | 37.3 | **WIN** | +$50.00 | 60 min | $5125.00 |
-| 5 | 2026-08-27 10:00 | SELL | 4590.92 | 4597.64 | 4577.48 | 0.04 | 38.3 | **WIN** | +$50.00 | 30 min | $5175.00 |
-| 6 | 2026-08-28 10:15 | BUY | 4595.19 | 4592.19 | 4601.19 | 0.08 | 54.9 | **WIN** | +$50.00 | 45 min | $5225.00 |
-| 7 | 2026-08-28 10:30 | BUY | 4597.41 | 4593.99 | 4604.25 | 0.07 | 56.7 | **LOSS** | $-25.00 | 75 min | $5200.00 |
-| 8 | 2026-09-17 11:45 | BUY | 4326.78 | 4319.78 | 4340.78 | 0.04 | 61.4 | **WIN** | +$50.00 | 60 min | $5250.00 |
-| 9 | 2026-09-18 11:30 | BUY | 4378.11 | 4374.86 | 4384.61 | 0.08 | 51.0 | **LOSS** | $-25.00 | 15 min | $5225.00 |
-| 10 | 2026-09-21 10:45 | SELL | 4343.12 | 4346.17 | 4337.02 | 0.08 | 40.0 | **LOSS** | $-25.00 | 15 min | $5200.00 |
-| 11 | 2026-09-21 11:45 | SELL | 4341.03 | 4348.03 | 4327.03 | 0.04 | 39.3 | **LOSS** | $-25.00 | 30 min | $5175.00 |
-| 12 | 2026-09-29 10:45 | BUY | 4157.51 | 4152.82 | 4166.89 | 0.05 | 61.4 | **WIN** | +$50.00 | 75 min | $5225.00 |
-| 13 | 2026-09-29 11:00 | BUY | 4160.86 | 4154.12 | 4174.34 | 0.04 | 65.2 | **WIN** | +$50.00 | 105 min | $5275.00 |
-| 14 | 2026-09-30 10:30 | BUY | 4195.57 | 4192.10 | 4202.51 | 0.07 | 52.7 | **LOSS** | $-25.00 | 60 min | $5250.00 |
-| 15 | 2026-10-05 09:45 | BUY | 4173.20 | 4166.59 | 4186.42 | 0.04 | 61.6 | **LOSS** | $-25.00 | 45 min | $5225.00 |
-| 16 | 2026-10-07 09:45 | SELL | 4133.87 | 4139.55 | 4122.51 | 0.04 | 33.8 | **WIN** | +$50.00 | 210 min | $5275.00 |
-| 17 | 2026-10-07 10:15 | SELL | 4132.83 | 4139.55 | 4119.39 | 0.04 | 34.4 | **WIN** | +$50.00 | 180 min | $5325.00 |
-| 18 | 2026-10-12 10:15 | SELL | 4175.44 | 4181.16 | 4164.00 | 0.04 | 33.7 | **WIN** | +$50.00 | 180 min | $5375.00 |
-| 19 | 2026-10-12 11:45 | SELL | 4176.72 | 4181.16 | 4167.84 | 0.06 | 41.6 | **WIN** | +$50.00 | 60 min | $5425.00 |
-| 20 | 2026-10-14 09:45 | SELL | 4148.73 | 4151.73 | 4142.73 | 0.08 | 39.0 | **WIN** | +$50.00 | 75 min | $5475.00 |
-| 21 | 2026-10-14 10:15 | SELL | 4147.55 | 4151.57 | 4139.51 | 0.06 | 38.2 | **LOSS** | $-25.00 | 165 min | $5450.00 |
-| 22 | 2026-10-16 10:00 | BUY | 4187.66 | 4183.06 | 4196.86 | 0.05 | 61.4 | **LOSS** | $-25.00 | 15 min | $5425.00 |
-| 23 | 2026-10-27 09:30 | SELL | 4005.66 | 4012.66 | 3991.66 | 0.04 | 32.3 | **LOSS** | $-25.00 | 30 min | $5400.00 |
-| 24 | 2026-10-27 11:00 | SELL | 4007.99 | 4014.99 | 3993.99 | 0.04 | 39.9 | **LOSS** | $-25.00 | 30 min | $5375.00 |
-| 25 | 2026-10-30 11:00 | SELL | 3990.95 | 3997.95 | 3976.95 | 0.04 | 41.7 | **WIN** | +$50.00 | 90 min | $5425.00 |
+| # | Algiers Time | Market | Dir | Entry | SL | TP | Lot | Outcome | P&L ($) | Balance ($) |
+| :---: | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| 76 | 2026-10-27 09:15 | **GBPUSD** | SELL | 1.33237 | 1.33337 | 1.33037 | 0.25 | **LOSS** | $-25.00 | $5945.74 |
+| 77 | 2026-10-28 10:30 | **GBPUSD** | SELL | 1.32867 | 1.32984 | 1.32634 | 0.21 | **LOSS** | $-25.00 | $5920.74 |
+| 78 | 2026-10-29 10:15 | **EURUSD** | SELL | 1.11321 | 1.11413 | 1.11137 | 0.25 | **LOSS** | $-25.00 | $5895.74 |
+| 79 | 2026-10-30 09:00 | **GBPUSD** | BUY | 1.34104 | 1.34004 | 1.34304 | 0.25 | **WIN** | +$50.00 | $5945.74 |
+| 80 | 2026-10-30 09:15 | **GBPUSD** | BUY | 1.34156 | 1.34047 | 1.34374 | 0.22 | **LOSS** | $-25.00 | $5920.74 |
+| 81 | 2026-11-03 09:00 | **EURUSD** | BUY | 1.12057 | 1.11977 | 1.12218 | 0.25 | **LOSS** | $-25.00 | $5895.74 |
+| 82 | 2026-11-03 09:45 | **GBPUSD** | BUY | 1.34192 | 1.34092 | 1.34392 | 0.25 | **LOSS** | $-25.00 | $5870.74 |
+| 83 | 2026-11-05 10:30 | **GBPUSD** | SELL | 1.34696 | 1.34797 | 1.34495 | 0.24 | **WIN** | +$50.00 | $5920.74 |
+| 84 | 2026-11-06 09:15 | **EURUSD** | SELL | 1.11882 | 1.11974 | 1.11697 | 0.25 | **WIN** | +$50.00 | $5970.74 |
+| 85 | 2026-11-06 09:45 | **EURUSD** | SELL | 1.11819 | 1.11974 | 1.11509 | 0.16 | **WIN** | +$50.00 | $6020.74 |
+| 86 | 2026-11-09 10:30 | **BTCUSD** | SELL | 74232.21 | 74632.21 | 73432.21 | 0.06 | **LOSS** | $-25.00 | $5995.74 |
+| 87 | 2026-11-09 11:00 | **BTCUSD** | SELL | 74176.01 | 74576.01 | 73376.01 | 0.06 | **LOSS** | $-25.00 | $5970.74 |
+| 88 | 2026-11-10 09:45 | **GBPUSD** | BUY | 1.34550 | 1.34450 | 1.34750 | 0.25 | **LOSS** | $-25.00 | $5945.74 |
+| 89 | 2026-11-10 11:15 | **BTCUSD** | SELL | 74326.07 | 74726.07 | 73526.07 | 0.06 | **LOSS** | $-25.00 | $5920.74 |
+| 90 | 2026-11-12 11:00 | **BTCUSD** | SELL | 73426.34 | 73826.34 | 72626.34 | 0.06 | **WIN** | +$50.00 | $5970.74 |
+| 91 | 2026-11-12 11:30 | **BTCUSD** | SELL | 73508.00 | 73908.00 | 72708.00 | 0.06 | **WIN** | +$50.00 | $6020.74 |
+| 92 | 2026-11-13 09:00 | **EURUSD** | BUY | 1.10681 | 1.10577 | 1.10888 | 0.24 | **LOSS** | $-25.00 | $5995.74 |
+| 93 | 2026-11-16 10:30 | **GBPUSD** | SELL | 1.31895 | 1.32062 | 1.31560 | 0.14 | **WIN** | +$27.73 | $6023.47 |
+| 94 | 2026-11-16 10:45 | **BTCUSD** | SELL | 64327.77 | 64727.77 | 63527.77 | 0.06 | **LOSS** | $-25.00 | $5998.47 |
+| 95 | 2026-11-17 10:45 | **BTCUSD** | SELL | 64365.48 | 64765.48 | 63565.48 | 0.06 | **LOSS** | $-25.00 | $5973.47 |
+| 96 | 2026-11-18 11:00 | **EURUSD** | SELL | 1.09782 | 1.09872 | 1.09601 | 0.25 | **WIN** | +$50.00 | $6023.47 |
+| 97 | 2026-11-19 09:00 | **GBPUSD** | BUY | 1.31548 | 1.31448 | 1.31748 | 0.25 | **LOSS** | $-25.00 | $5998.47 |
+| 98 | 2026-11-19 11:15 | **GBPUSD** | BUY | 1.31586 | 1.31486 | 1.31786 | 0.25 | **LOSS** | $-25.00 | $5973.47 |
+| 99 | 2026-11-20 09:15 | **GBPUSD** | BUY | 1.31139 | 1.31039 | 1.31339 | 0.25 | **LOSS** | $-25.00 | $5948.47 |
+| 100 | 2026-11-20 11:45 | **EURUSD** | SELL | 1.09625 | 1.09715 | 1.09445 | 0.25 | **LOSS** | $-25.00 | $5923.47 |

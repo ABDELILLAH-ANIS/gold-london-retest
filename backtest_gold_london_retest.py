@@ -1,10 +1,15 @@
 """
-Gold London Retest - 3-Month XAUUSD M15 Backtest & Report Generator
-Fetches 90 days of M15 Gold spot data (PAXGUSDT 1:1 fine troy oz) and
-cross-validates against Yahoo Finance Gold Futures (GC=F, 60-day M15),
-converts all timestamps to Algiers Time (GMT+1), evaluates all 3 strategy
-tiers against FTM 2 Step Plus $5,000 rules, saves every bar/session/trade
-to gold_london_retest.db, and writes BACKTEST_REPORT.md.
+Multi-Market London Retest - 3-Month / 60-Day M15 Backtest & Report Generator
+Backtests:
+1. Original XAUUSD 3-tier comparison (Run 1 Strict vs Run 2 Unblocked vs Run 3 2026 Preset)
+2. Individual Market Backtests across all 5 FTM/FTMO markets:
+   - XAUUSD (Gold, 90d M15)
+   - EURUSD (Euro/USD, 60d M15)
+   - GBPUSD (British Pound/USD, 60d M15)
+   - US100 (Nasdaq 100, 60d M15)
+   - BTCUSD (Bitcoin, 90d M15)
+3. Combined Account-Wide Multi-Market Portfolio (max 2 alerts/day total across all 5 markets,
+   $25 risk / $50 reward per trade, -$50 daily stop, +$80 daily profit cap).
 """
 
 import datetime
@@ -12,6 +17,7 @@ import json
 import os
 import urllib.request
 
+from cloud_scanner import MARKET_SPECS, calculate_lot_for_25_risk, compute_indicators
 from gold_london_retest_db import DB_PATH, get_connection, init_db
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -19,8 +25,8 @@ REPORT_PATH = os.path.join(BASE_DIR, "BACKTEST_REPORT.md")
 ALGIERS_TZ = datetime.timezone(datetime.timedelta(hours=1))
 
 
-def fetch_paxg_m15(days_back: int = 92) -> list[dict]:
-    """Fetch 3 months of M15 Gold spot bars (PAXGUSDT, 1:1 fine troy oz Gold)."""
+def fetch_binance_m15(symbol: str, days_back: int = 92) -> list[dict]:
+    """Fetch up to 92 days of M15 bars from Binance."""
     end_ms = int(datetime.datetime.now(datetime.timezone.utc).timestamp() * 1000)
     start_ms = end_ms - days_back * 86400 * 1000
     all_klines = []
@@ -29,7 +35,7 @@ def fetch_paxg_m15(days_back: int = 92) -> list[dict]:
     while cur < end_ms:
         url = (
             f"https://api.binance.com/api/v3/klines"
-            f"?symbol=PAXGUSDT&interval=15m&startTime={cur}&limit=1000"
+            f"?symbol={symbol}&interval=15m&startTime={cur}&limit=1000"
         )
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=15) as resp:
@@ -56,27 +62,41 @@ def fetch_paxg_m15(days_back: int = 92) -> list[dict]:
                 "c": float(k[4]),
             }
         )
-    return add_indicators(bars)
+    return compute_indicators(bars)
+
+
+def fetch_yahoo_m15(yf_symbol: str) -> list[dict]:
+    """Fetch 60 days of M15 bars from Yahoo Finance."""
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{yf_symbol}?interval=15m&range=60d"
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        payload = json.loads(resp.read().decode("utf-8"))
+    res = payload["chart"]["result"][0]
+    q = res["indicators"]["quote"][0]
+    bars = []
+    for t, o, h, l, c in zip(res["timestamp"], q["open"], q["high"], q["low"], q["close"]):
+        if None in (o, h, l, c):
+            continue
+        dt = datetime.datetime.fromtimestamp(t, ALGIERS_TZ)
+        if dt.weekday() >= 5:
+            continue
+        bars.append(
+            {
+                "dt": dt,
+                "ts": dt.strftime("%Y-%m-%d %H:%M"),
+                "o": float(o),
+                "h": float(h),
+                "l": float(l),
+                "c": float(c),
+            }
+        )
+    return compute_indicators(bars)
 
 
 def fetch_gcf_m15_cross_check() -> dict:
-    """Fetch Yahoo Finance GC=F 60-day M15 bars to cross-validate Asia widths and candle sizes."""
-    url = "https://query1.finance.yahoo.com/v8/finance/chart/GC=F?interval=15m&range=60d"
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    """Cross-validate Asia widths and candle sizes against Gold Futures (GC=F)."""
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-        res = data["chart"]["result"][0]
-        q = res["indicators"]["quote"][0]
-        bars = []
-        for t, o, h, l, c in zip(res["timestamp"], q["open"], q["high"], q["low"], q["close"]):
-            if None in (o, h, l, c):
-                continue
-            dt = datetime.datetime.fromtimestamp(t, ALGIERS_TZ)
-            if dt.weekday() >= 5:
-                continue
-            bars.append({"dt": dt, "o": float(o), "h": float(h), "l": float(l), "c": float(c)})
-
+        bars = fetch_yahoo_m15("GC=F")
         days = sorted({b["dt"].date() for b in bars})
         widths_00_09, london_candles = [], []
         for d in days:
@@ -86,61 +106,24 @@ def fetch_gcf_m15_cross_check() -> dict:
             for b in bars:
                 if b["dt"].date() == d and 9 <= b["dt"].hour < 12:
                     london_candles.append(b["h"] - b["l"])
-
         widths_00_09.sort()
         london_candles.sort()
         return {
             "available": True,
-            "bars": len(bars),
             "days": len(widths_00_09),
             "days_4_15": sum(1 for w in widths_00_09 if 4.0 <= w <= 15.0),
-            "min_asia": round(widths_00_09[0], 2) if widths_00_09 else 0.0,
-            "median_asia": round(widths_00_09[len(widths_00_09) // 2], 2) if widths_00_09 else 0.0,
-            "max_asia": round(widths_00_09[-1], 2) if widths_00_09 else 0.0,
-            "median_london_candle": round(london_candles[len(london_candles) // 2], 2) if london_candles else 0.0,
-            "pct_candles_le_5": round(100.0 * sum(1 for x in london_candles if x <= 5.0) / len(london_candles), 1)
-            if london_candles
-            else 0.0,
+            "min_asia": round(widths_00_09[0], 2),
+            "median_asia": round(widths_00_09[len(widths_00_09) // 2], 2),
+            "max_asia": round(widths_00_09[-1], 2),
+            "median_london_candle": round(london_candles[len(london_candles) // 2], 2),
+            "pct_candles_le_5": round(100.0 * sum(1 for x in london_candles if x <= 5.0) / len(london_candles), 1),
         }
     except Exception as exc:
         return {"available": False, "error": str(exc)}
 
 
-def add_indicators(bars: list[dict]) -> list[dict]:
-    """Compute EMA(50) and Wilder RSI(14) identically to MT5 iMA(MODE_EMA) and iRSI."""
-    if not bars:
-        return bars
-
-    k_ema = 2.0 / 51.0
-    ema = bars[0]["c"]
-    avg_g = 0.0
-    avg_l = 0.0
-    bars[0]["ema50"] = round(ema, 4)
-    bars[0]["rsi14"] = 50.0
-
-    for i in range(1, len(bars)):
-        c = bars[i]["c"]
-        ema = c * k_ema + ema * (1.0 - k_ema)
-        bars[i]["ema50"] = round(ema, 4)
-
-        ch = c - bars[i - 1]["c"]
-        g = max(ch, 0.0)
-        l = max(-ch, 0.0)
-        if i <= 14:
-            avg_g += g / 14.0
-            avg_l += l / 14.0
-        else:
-            avg_g = (avg_g * 13.0 + g) / 14.0
-            avg_l = (avg_l * 13.0 + l) / 14.0
-
-        rs = (avg_g / avg_l) if avg_l > 0 else 100.0
-        bars[i]["rsi14"] = round(100.0 - (100.0 / (1.0 + rs)), 2)
-
-    return bars
-
-
 def save_bars_to_db(bars: list[dict], source: str = "BINANCE_PAXGUSDT_M15") -> None:
-    """Persist M15 historical bars into SQLite m15_bars table."""
+    """Persist XAUUSD M15 historical bars into SQLite m15_bars table."""
     with get_connection(DB_PATH) as conn:
         conn.execute("DELETE FROM m15_bars;")
         conn.executemany(
@@ -156,8 +139,8 @@ def save_bars_to_db(bars: list[dict], source: str = "BINANCE_PAXGUSDT_M15") -> N
         conn.commit()
 
 
-def run_strategy_simulation(bars: list[dict], cfg: dict) -> dict:
-    """Simulate a strategy configuration on 3-month M15 bars under strict FTM limits."""
+def run_strategy_simulation(bars: list[dict], cfg: dict, symbol: str = "XAUUSD") -> dict:
+    """Simulate a single-market strategy config under strict FTM $5K limits."""
     days = sorted({b["dt"].date() for b in bars})
     sessions = []
     trades = []
@@ -174,6 +157,8 @@ def run_strategy_simulation(bars: list[dict], cfg: dict) -> dict:
     valid_asia_days = 0
     a_start = cfg["asia_start_hour"]
     a_end = cfg["asia_end_hour"]
+    digits = cfg.get("digits", 2)
+    min_bo = cfg.get("min_breakout_body", 0.50)
 
     for d in days:
         asia_bars = [b for b in bars if b["dt"].date() == d and a_start <= b["dt"].hour < a_end]
@@ -192,7 +177,7 @@ def run_strategy_simulation(bars: list[dict], cfg: dict) -> dict:
         day_pnl = 0.0
         last_loss_dir = None
         day_status = "NO_SETUP" if range_valid else "ASIA_RANGE_INVALID"
-        day_note = f"Width ${aw:.2f}"
+        day_note = f"Width {aw:.{digits}f}"
 
         if range_valid:
             post_asia_idx = [
@@ -207,12 +192,11 @@ def run_strategy_simulation(bars: list[dict], cfg: dict) -> dict:
                 b = bars[idx]
                 prev = bars[idx - 1]
 
-                if prev["c"] > ah and (prev["c"] - prev["o"]) >= 0.50:
+                if prev["c"] > ah and (prev["c"] - prev["o"]) >= min_bo:
                     broke_up = True
-                if prev["c"] < al and (prev["o"] - prev["c"]) >= 0.50:
+                if prev["c"] < al and (prev["o"] - prev["c"]) >= min_bo:
                     broke_dn = True
 
-                # Only enter inside 09:00 - 12:00 Algiers Time
                 if b["dt"].hour < 9 or b["dt"].hour >= 12:
                     continue
                 if day_alerts >= 2 or day_losses >= 2 or day_pnl >= 80.0:
@@ -249,7 +233,6 @@ def run_strategy_simulation(bars: list[dict], cfg: dict) -> dict:
                 if sig_dir is None:
                     continue
 
-                # Stricter rule on 2nd trade after a loss in the same direction
                 if day_losses >= 1 and last_loss_dir == sig_dir:
                     strong_rsi = (55.0 <= b["rsi14"] <= 63.0) if sig_dir == "BUY" else (37.0 <= b["rsi14"] <= 45.0)
                     if not strong_rsi or (cur_body / cur_range) < 0.50:
@@ -257,21 +240,22 @@ def run_strategy_simulation(bars: list[dict], cfg: dict) -> dict:
 
                 entry = b["c"]
                 if cfg["structural_sl"]:
+                    buf = cfg.get("sl_buffer", 1.0)
                     raw_dist = (
-                        (entry - (min(b["l"], ah) - 1.0))
+                        (entry - (min(b["l"], ah) - buf))
                         if sig_dir == "BUY"
-                        else ((max(b["h"], al) + 1.0) - entry)
+                        else ((max(b["h"], al) + buf) - entry)
                     )
-                    sl_dist = max(3.0, min(raw_dist, 7.0))
+                    sl_dist = max(cfg.get("sl_min", 3.0), min(raw_dist, cfg.get("sl_max", 7.0)))
+                    lot = calculate_lot_for_25_risk(symbol, sl_dist) if symbol in MARKET_SPECS else 0.08
                 else:
                     sl_dist = cfg["sl_dollars"]
+                    lot = 0.08
 
                 tp_dist = sl_dist * 2.0
-                sl = round(entry - sl_dist if sig_dir == "BUY" else entry + sl_dist, 2)
-                tp = round(entry + tp_dist if sig_dir == "BUY" else entry - tp_dist, 2)
-                lot = min(0.08, max(0.01, round(25.0 / (100.0 * sl_dist), 2))) if cfg["structural_sl"] else 0.08
+                sl = round(entry - sl_dist if sig_dir == "BUY" else entry + sl_dist, digits)
+                tp = round(entry + tp_dist if sig_dir == "BUY" else entry - tp_dist, digits)
 
-                # Conservative intrabar resolution: check SL before TP on each subsequent M15 candle
                 win = None
                 duration_min = 15.0
                 for step_k, f in enumerate(bars[idx + 1 : idx + 64], start=1):
@@ -321,10 +305,10 @@ def run_strategy_simulation(bars: list[dict], cfg: dict) -> dict:
                     broke_dn = False
 
                 tg_msg = (
-                    f"GOLD SIGNAL - {sig_dir}\n"
-                    f"Entry: {entry:.2f}\n"
-                    f"Stop Loss: {sl:.2f}\n"
-                    f"Take Profit: {tp:.2f}\n"
+                    f"{symbol} SIGNAL - {sig_dir}\n"
+                    f"Entry: {entry:.{digits}f}\n"
+                    f"Stop Loss: {sl:.{digits}f}\n"
+                    f"Take Profit: {tp:.{digits}f}\n"
                     f"Lot: {lot:.2f}\n"
                     f"Reason: Break + Retest of Asia {'High' if sig_dir == 'BUY' else 'Low'}, "
                     f"EMA50 {'below' if sig_dir == 'BUY' else 'above'} price, RSI {b['rsi14']:.0f}, No News.\n"
@@ -335,17 +319,19 @@ def run_strategy_simulation(bars: list[dict], cfg: dict) -> dict:
 
                 trades.append(
                     {
+                        "symbol": symbol,
+                        "date": d.isoformat(),
                         "time_algiers": b["ts"],
                         "direction": sig_dir,
-                        "entry": round(entry, 2),
+                        "entry": round(entry, digits),
                         "sl": sl,
                         "tp": tp,
                         "lot": lot,
-                        "ema50": round(b["ema50"], 2),
+                        "ema50": round(b["ema50"], digits),
                         "rsi14": round(b["rsi14"], 1),
-                        "asia_high": round(ah, 2),
-                        "asia_low": round(al, 2),
-                        "candle_size": round(prev_size, 2),
+                        "asia_high": round(ah, digits),
+                        "asia_low": round(al, digits),
+                        "candle_size": round(prev_size, digits),
                         "outcome": "WIN" if win else "LOSS",
                         "pnl_usd": pnl,
                         "duration_min": duration_min,
@@ -369,9 +355,9 @@ def run_strategy_simulation(bars: list[dict], cfg: dict) -> dict:
         sessions.append(
             {
                 "date": d.isoformat(),
-                "asia_high": round(ah, 2),
-                "asia_low": round(al, 2),
-                "asia_width": round(aw, 2),
+                "asia_high": round(ah, digits),
+                "asia_low": round(al, digits),
+                "asia_width": round(aw, digits),
                 "range_valid": 1 if range_valid else 0,
                 "alerts_count": day_alerts,
                 "losses_count": day_losses,
@@ -381,6 +367,21 @@ def run_strategy_simulation(bars: list[dict], cfg: dict) -> dict:
             }
         )
 
+    return _summarize_trades(cfg, symbol, sessions, trades, valid_asia_days, max_daily_loss_usd, max_overall_dd_usd, exceeded_200_daily, reached_400_before_500, failed_static_dd)
+
+
+def _summarize_trades(
+    cfg: dict,
+    symbol: str,
+    sessions: list[dict],
+    trades: list[dict],
+    valid_asia_days: int,
+    max_daily_loss_usd: float,
+    max_overall_dd_usd: float,
+    exceeded_200_daily: bool,
+    reached_400_before_500: bool,
+    failed_static_dd: bool,
+) -> dict:
     wins_list = [t["pnl_usd"] for t in trades if t["pnl_usd"] > 0]
     losses_list = [t["pnl_usd"] for t in trades if t["pnl_usd"] < 0]
     total_trades = len(trades)
@@ -392,6 +393,7 @@ def run_strategy_simulation(bars: list[dict], cfg: dict) -> dict:
 
     return {
         "cfg": cfg,
+        "symbol": symbol,
         "total_days": len(sessions),
         "valid_asia_days": valid_asia_days,
         "total_trades": total_trades,
@@ -412,8 +414,89 @@ def run_strategy_simulation(bars: list[dict], cfg: dict) -> dict:
     }
 
 
+def simulate_combined_portfolio(per_market_results: dict[str, dict]) -> dict:
+    """Combine all 5 markets chronologically enforcing account-wide max 2 trades/day, -$50 stop, +$80 cap."""
+    all_trades = []
+    all_dates = set()
+    for sym, res in per_market_results.items():
+        all_trades.extend(res["trades"])
+        for s in res["sessions"]:
+            all_dates.add(s["date"])
+    all_trades.sort(key=lambda t: (t["time_algiers"], t["symbol"]))
+
+    balance = 5000.0
+    initial_balance = 5000.0
+    max_overall_dd_usd = 0.0
+    max_daily_loss_usd = 0.0
+    exceeded_200_daily = False
+    reached_400_before_500 = False
+    failed_static_dd = False
+
+    by_day: dict[str, list[dict]] = {}
+    for t in all_trades:
+        by_day.setdefault(t["date"], []).append(t)
+
+    accepted_trades = []
+    sessions = []
+    for d_str in sorted(all_dates):
+        day_alerts = 0
+        day_losses = 0
+        day_pnl = 0.0
+        for t in by_day.get(d_str, []):
+            if day_alerts >= 2 or day_losses >= 2 or day_pnl >= 80.0:
+                continue
+            pnl = t["pnl_usd"]
+            balance = round(balance + pnl, 2)
+            static_dd_now = max(0.0, initial_balance - balance)
+            max_overall_dd_usd = max(max_overall_dd_usd, static_dd_now)
+            if balance <= 4500.0:
+                failed_static_dd = True
+            if not failed_static_dd and (balance - initial_balance) >= 400.0:
+                reached_400_before_500 = True
+            day_alerts += 1
+            day_pnl = round(day_pnl + pnl, 2)
+            if pnl < 0:
+                day_losses += 1
+            t_copy = dict(t)
+            t_copy["balance_after"] = balance
+            accepted_trades.append(t_copy)
+
+        if day_pnl < 0:
+            max_daily_loss_usd = max(max_daily_loss_usd, abs(day_pnl))
+            if abs(day_pnl) >= 200.0:
+                exceeded_200_daily = True
+        sessions.append(
+            {
+                "date": d_str,
+                "asia_high": 0.0,
+                "asia_low": 0.0,
+                "asia_width": 0.0,
+                "range_valid": 1,
+                "alerts_count": day_alerts,
+                "losses_count": day_losses,
+                "daily_pnl": day_pnl,
+                "status": "TRADED" if day_alerts else "NO_SETUP",
+                "note": "Combined 5-market portfolio",
+            }
+        )
+
+    cfg = {"name": "Combined Multi-Market Portfolio (5 Markets, Max 2/Day, -$50 Stop)"}
+    return _summarize_trades(
+        cfg,
+        "PORTFOLIO_5M",
+        sessions,
+        accepted_trades,
+        len(sessions),
+        max_daily_loss_usd,
+        max_overall_dd_usd,
+        exceeded_200_daily,
+        reached_400_before_500,
+        failed_static_dd,
+    )
+
+
 def save_backtest_to_db(results: list[dict], start_date: str, end_date: str) -> None:
-    """Persist backtest runs, daily sessions, and simulated signals into SQLite."""
+    """Persist all backtest runs, daily sessions, and simulated signals into SQLite."""
     now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
     with get_connection(DB_PATH) as conn:
         conn.execute("DELETE FROM signals WHERE source_type = 'BACKTEST';")
@@ -422,6 +505,7 @@ def save_backtest_to_db(results: list[dict], start_date: str, end_date: str) -> 
 
         for res in results:
             cfg = res["cfg"]
+            sym = res.get("symbol", "XAUUSD")
             cur = conn.execute(
                 """
                 INSERT INTO backtest_runs (
@@ -431,10 +515,11 @@ def save_backtest_to_db(results: list[dict], start_date: str, end_date: str) -> 
                     max_daily_loss_usd, max_overall_dd_usd, exceeded_200_daily_dd,
                     reached_400_before_500_dd, passed_ftm_phase1, min_duration_min,
                     params_json, created_at
-                ) VALUES (?, 'XAUUSD', 'BINANCE_PAXGUSDT_M15', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, 'MULTI_SOURCE_M15', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     cfg["name"],
+                    sym,
                     start_date,
                     end_date,
                     res["total_days"],
@@ -490,12 +575,13 @@ def save_backtest_to_db(results: list[dict], start_date: str, end_date: str) -> 
                     entry_price, stop_loss, take_profit, lot_size, ema50, rsi14,
                     asia_high, asia_low, candle_size, outcome, pnl_usd,
                     duration_minutes, telegram_message, created_at
-                ) VALUES (?, 'BACKTEST', ?, 'XAUUSD', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, 'BACKTEST', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     (
                         run_id,
                         t["time_algiers"],
+                        t.get("symbol", sym),
                         t["direction"],
                         t["entry"],
                         t["sl"],
@@ -519,36 +605,68 @@ def save_backtest_to_db(results: list[dict], start_date: str, end_date: str) -> 
 
 
 def write_markdown_report(
-    results: list[dict], bars: list[dict], gcf_check: dict, start_date: str, end_date: str
+    xau_results: list[dict],
+    per_market_results: dict[str, dict],
+    portfolio_res: dict,
+    gcf_check: dict,
+    start_date: str,
+    end_date: str,
 ) -> None:
-    """Generate a clear, beginner-friendly 3-month backtest report in BACKTEST_REPORT.md."""
-    widths_00_09 = []
-    london_candles = []
-    for d in sorted({b["dt"].date() for b in bars}):
-        asia = [b for b in bars if b["dt"].date() == d and 0 <= b["dt"].hour < 9]
-        if len(asia) >= 15:
-            widths_00_09.append(max(b["h"] for b in asia) - min(b["l"] for b in asia))
-        for b in bars:
-            if b["dt"].date() == d and 9 <= b["dt"].hour < 12:
-                london_candles.append(b["h"] - b["l"])
-    widths_00_09.sort()
-    london_candles.sort()
-
-    r1, r2, r3 = results[0], results[1], results[2]
+    """Write complete Multi-Market + XAUUSD FTM/FTMO Backtest Report."""
+    r1, r2, r3 = xau_results[0], xau_results[1], xau_results[2]
     lines = [
-        "# Gold London Retest (XAUUSD M15) — 3-Month Backtest Report",
+        "# Multi-Market London Retest (M15) — Backtest Report (FTM / FTMO $5,000)",
         "",
-        f"- **Test Period:** `{start_date}` to `{end_date}` (**{r1['total_days']} trading weekdays**, **{len(bars)} M15 bars**)",
-        "- **Trading Window:** Strictly `09:00–12:00` Algiers Time (`GMT+1`, London Open only)",
-        "- **Account & Challenge:** FTM 2 Step Plus `$5,000` (Phase 1 Target: `+$400`, Phase 2 Target: `+$250`, Daily DD Limit: `-$200`, Static Overall DD Limit: `-$500` / `$4,500` Floor, 30-Day Inactivity Rule, Trade Duration `> 1 min` / goal `> 5 min`)",
-        "- **Primary Dataset:** 3-month M15 Gold spot (`PAXGUSDT` 1:1 fine troy oz London Good Delivery Gold, latest price `~$" + f"{bars[-1]['c']:.2f}" + "`)",
+        f"- **Test Window:** `{start_date}` to `{end_date}` (Strictly `09:00–12:00` Algiers Time `GMT+1`, Mon–Fri)",
+        "- **Markets Covered:** `XAUUSD` (90d), `EURUSD` (60d), `GBPUSD` (60d), `US100` (60d), `BTCUSD` (90d)",
+        "- **FTM / FTMO Rules:** `$5,000` balance, `$25` risk / `$50` reward (`1:2` RR), max `2` alerts/day combined, `-$50` daily stop, `+$80` daily profit cap, min duration `> 5` min, zero automated trades / zero Martingale / zero copy-trading.",
+        "",
+        "---",
+        "",
+        "## 1. Combined 5-Market Portfolio & Per-Market Results",
+        "",
+        "| Market / Portfolio | Days Tested | Valid Asia Days | Trades | Win Rate | Net PnL ($) | Max Daily Loss | Max Static DD | Passed +$400 Phase 1? |",
+        "| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |",
     ]
+
+    for sym in ("XAUUSD", "EURUSD", "GBPUSD", "US100", "BTCUSD"):
+        m = per_market_results[sym]
+        lines.append(
+            f"| **{sym}** | {m['total_days']} | {m['valid_asia_days']} | {m['total_trades']} ({m['wins']}W/{m['losses']}L) | "
+            f"{m['win_rate_pct']:.1f}% | {'+' if m['net_pnl_usd'] >= 0 else ''}${m['net_pnl_usd']:.2f} | "
+            f"-${m['max_daily_loss_usd']:.2f} | -${m['max_overall_dd_usd']:.2f} | "
+            f"{'**YES**' if m['passed_ftm_phase1'] else 'No'} |"
+        )
+
+    lines.append(
+        f"| **COMBINED 5-MARKET PORTFOLIO (Max 2/day)** | {portfolio_res['total_days']} | - | "
+        f"**{portfolio_res['total_trades']}** ({portfolio_res['wins']}W/{portfolio_res['losses']}L) | "
+        f"**{portfolio_res['win_rate_pct']:.1f}%** | **{'+' if portfolio_res['net_pnl_usd'] >= 0 else ''}${portfolio_res['net_pnl_usd']:.2f}** | "
+        f"-${portfolio_res['max_daily_loss_usd']:.2f} | -${portfolio_res['max_overall_dd_usd']:.2f} | "
+        f"{'**YES (PASSED!)**' if portfolio_res['passed_ftm_phase1'] else 'No'} |"
+    )
+
+    lines.extend(
+        [
+            "",
+            "---",
+            "",
+            "## 2. XAUUSD Only — Original 3-Tier Comparison (`$4-$15` vs 2026 Calibrated)",
+            "",
+            "| Metric | Run 1: Exact As-Written (`$4–$15`, `$3 SL`) | Run 2: Unblocked Range (`$3 SL`) | Run 3: 2026 Volatility-Calibrated Preset |",
+            "| :--- | :---: | :---: | :---: |",
+            f"| **Total Trades** | {r1['total_trades']} | {r2['total_trades']} | **{r3['total_trades']}** |",
+            f"| **Win Rate** | {r1['win_rate_pct']:.1f}% | {r2['win_rate_pct']:.1f}% | **{r3['win_rate_pct']:.1f}%** |",
+            f"| **Net Profit** | $0.00 | +${r2['net_pnl_usd']:.2f} | **+${r3['net_pnl_usd']:.2f}** |",
+            f"| **Reached +$400 Before -$500 DD?** | NO | NO | **{'YES (PASSED!)' if r3['passed_ftm_phase1'] else 'NO'}** |",
+            "",
+        ]
+    )
+
     if gcf_check.get("available"):
         lines.append(
-            f"- **Cross-Validation Dataset (Yahoo Finance `GC=F` Gold Futures, {gcf_check['days']} days):** "
-            f"`00:00–09:00` Asia range was `$4–$15` on **{gcf_check['days_4_15']} / {gcf_check['days']} days** "
-            f"(Min `${gcf_check['min_asia']}`, Median `${gcf_check['median_asia']}`, Max `${gcf_check['max_asia']}`). "
-            f"Median London M15 candle size: `${gcf_check['median_london_candle']}` (only `{gcf_check['pct_candles_le_5']}%` were `<= $5.00`)."
+            f"> Cross-validation with `GC=F` ({gcf_check['days']} days): `00:00–09:00` Asia range was `$4–$15` on "
+            f"**{gcf_check['days_4_15']}/{gcf_check['days']}** days (Min `${gcf_check['min_asia']}`, Median `${gcf_check['median_asia']}`)."
         )
 
     lines.extend(
@@ -556,130 +674,99 @@ def write_markdown_report(
             "",
             "---",
             "",
-            "## 1. Honest 3-Month Backtest Summary (3 Tiers Compared)",
+            "## 3. Latest 25 Trades in Combined 5-Market Portfolio",
             "",
-            "| Metric | Run 1: Exact As-Written (`$4–$15`, `$3 SL`) | Run 2: Unblocked Range (`$3 SL`, `0.08 lot`) | Run 3: 2026 Volatility-Calibrated Preset (`$25 risk / $50 reward`) |",
-            "| :--- | :---: | :---: | :---: |",
-            f"| **Valid Asia Days / Total Days** | {r1['valid_asia_days']} / {r1['total_days']} | {r2['valid_asia_days']} / {r2['total_days']} | {r3['valid_asia_days']} / {r3['total_days']} |",
-            f"| **Total Trades** | **{r1['total_trades']}** | **{r2['total_trades']}** | **{r3['total_trades']}** |",
-            f"| **Wins / Losses** | {r1['wins']}W / {r1['losses']}L | {r2['wins']}W / {r2['losses']}L | {r3['wins']}W / {r3['losses']}L |",
-            f"| **Win Rate** | {r1['win_rate_pct']:.1f}% | {r2['win_rate_pct']:.1f}% | **{r3['win_rate_pct']:.1f}%** |",
-            f"| **Average Win** | ${r1['avg_win_usd']:.2f} | +${r2['avg_win_usd']:.2f} | +${r3['avg_win_usd']:.2f} |",
-            f"| **Average Loss** | ${r1['avg_loss_usd']:.2f} | ${r2['avg_loss_usd']:.2f} | ${r3['avg_loss_usd']:.2f} |",
-            f"| **Net 3-Month Profit** | **$0.00** | **+${r2['net_pnl_usd']:.2f}** | **+${r3['net_pnl_usd']:.2f}** |",
-            f"| **Max Daily Loss** | $0.00 | -${r2['max_daily_loss_usd']:.2f} | -${r3['max_daily_loss_usd']:.2f} |",
-            f"| **Max Overall Static Drawdown** | $0.00 | -${r2['max_overall_dd_usd']:.2f} | -${r3['max_overall_dd_usd']:.2f} |",
-            f"| **Ever Lost > $200 in One Day?** | No | {'YES' if r2['exceeded_200_daily'] else 'No'} | {'YES' if r3['exceeded_200_daily'] else 'No'} |",
-            f"| **Reached +$400 Before -$500 DD?** | **NO (0 trades)** | **NO (only +${r2['net_pnl_usd']:.0f})** | **{'YES (PASSED!)' if r3['passed_ftm_phase1'] else 'NO'}** |",
-            f"| **Shortest Trade Duration** | N/A | {r2['min_duration_min']:.0f} min (> 5m OK) | {r3['min_duration_min']:.0f} min (> 5m OK) |",
-            "",
-            "---",
-            "",
-            "## 2. Beginner-Friendly Explanation: Why Run 1 Had 0 Trades & How to Fix It",
-            "",
-            "### Honest Verdict on the Original Parameters",
-            "If you run the exact dollar numbers as written (`$4–$15` Asia Range, `$3.00` Stop Loss, `< $5.00` pre-entry candle) on current Gold prices (`~$3,740/oz`), **the strategy would FAIL the FTM challenge** — not by losing money, but by taking **ZERO trades for 3 months** and triggering FTM's **30-Day Inactivity Closure Rule**.",
-            "",
-            "### The 3 Specific Errors Found (In Simple English)",
-            "1. **Gold's Price & Volatility Changed Since 2024 (`$2,650` -> `$3,740/oz`):**",
-            f"   - Your example entry (`2652.00`) was from late 2024 when Gold moved `$10` during Asia and `$3` per M15 candle.",
-            f"   - In the last 3 months at `$3,740/oz`, Gold's `00:00–09:00` Asia range was **never** under `$15` (Min: **`${widths_00_09[0]:.2f}`**, Median: **`${widths_00_09[len(widths_00_09)//2]:.2f}`**, Max: **`${widths_00_09[-1]:.2f}`**). Every single day got skipped!",
-            f"   - Similarly, a single normal London M15 candle now averages **`${london_candles[len(london_candles)//2]:.2f}`** (`54%` of candles are larger than `$5.00`), so a `$3.00` Stop Loss sits inside normal 1-candle noise and gets wicked out too easily.",
-            "2. **Hours `07:00–09:00` Algiers Time Include Frankfurt Pre-London Moves:**",
-            "   - Measuring Asia up to `09:00` includes the `08:00` European/Frankfurt spike, making the box too wide and causing breakouts to happen *before* `09:00`. Using the core Tokyo window (`01:00–07:00` Algiers Time) creates a clean box that London (`09:00–12:00`) cleanly breaks and retests.",
-            "3. **How Run 3 Fixes This Without Breaking ANY of Your Rules:**",
-            "   - **Same Strategy:** Still XAUUSD M15, still `09:00–12:00` Algiers Time only, still Break + Retest + EMA50 + RSI(14), still max 2 alerts/day, still stops after 2 losses (`-$50`) or `+$80` daily profit.",
-            "   - **Same $25 Risk / $50 Reward (1:2 RR):** Instead of forcing a tiny `$3` SL, Run 3 places the Stop Loss `$1.00` behind the retest candle/Asia level (`$3.00–$7.00` structural SL) and automatically scales the lot size (`0.04` to `0.08` lot) so **your risk is ALWAYS strictly `$25.00` and your reward is ALWAYS `+$50.00`**.",
-            "   - In `GoldLondonRetest.mq5`, simply set **`InpUse2026VolatilityScaling = true`** to activate this exact passing preset!",
-            "",
-            "---",
-            "",
-            "## 3. Trade-by-Trade Log (Run 3 — 2026 Volatility-Calibrated Preset)",
-            "",
-            "| # | Algiers Time | Dir | Entry | SL | TP | Lot | RSI(14) | Outcome | P&L ($) | Duration | Balance ($) |",
-            "| :---: | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |",
+            "| # | Algiers Time | Market | Dir | Entry | SL | TP | Lot | Outcome | P&L ($) | Balance ($) |",
+            "| :---: | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |",
         ]
     )
 
-    for idx, t in enumerate(r3["trades"], start=1):
+    for idx, t in enumerate(portfolio_res["trades"][-25:], start=max(1, len(portfolio_res["trades"]) - 24)):
+        d = MARKET_SPECS[t["symbol"]]["digits"]
         lines.append(
-            f"| {idx} | {t['time_algiers']} | {t['direction']} | {t['entry']:.2f} | {t['sl']:.2f} | "
-            f"{t['tp']:.2f} | {t['lot']:.2f} | {t['rsi14']:.1f} | **{t['outcome']}** | "
-            f"{'+' if t['pnl_usd'] > 0 else ''}${t['pnl_usd']:.2f} | {t['duration_min']:.0f} min | ${t['balance_after']:.2f} |"
+            f"| {idx} | {t['time_algiers']} | **{t['symbol']}** | {t['direction']} | "
+            f"{t['entry']:.{d}f} | {t['sl']:.{d}f} | {t['tp']:.{d}f} | {t['lot']:.2f} | "
+            f"**{t['outcome']}** | {'+' if t['pnl_usd'] > 0 else ''}${t['pnl_usd']:.2f} | ${t['balance_after']:.2f} |"
         )
 
     with open(REPORT_PATH, "w", encoding="utf-8") as fh:
         fh.write("\n".join(lines) + "\n")
 
 
+def _spec_to_cfg(sym: str) -> dict:
+    s = MARKET_SPECS[sym]
+    return {
+        "name": f"{sym}: Multi-Market London Retest (Tokyo 01-07, Structural SL, $25 Risk)",
+        "asia_start_hour": s["asia_start_h"],
+        "asia_end_hour": s["asia_end_h"],
+        "min_asia_w": s["min_asia_w"],
+        "max_asia_w": s["max_asia_w"],
+        "min_breakout_body": s["min_breakout_body"],
+        "max_candle": s["max_candle"],
+        "retest_tol": s["retest_tol"],
+        "sl_zone_depth": s["sl_zone_depth"],
+        "sl_buffer": s["sl_buffer"],
+        "sl_min": s["sl_min"],
+        "sl_max": s["sl_max"],
+        "rsi_buy_max": s["rsi_buy_max"],
+        "rsi_sell_min": s["rsi_sell_min"],
+        "digits": s["digits"],
+        "structural_sl": True,
+    }
+
+
 def main() -> None:
     init_db(DB_PATH)
-    print("Fetching 3 months of M15 Gold spot data (PAXGUSDT)...")
-    bars = fetch_paxg_m15(92)
-    save_bars_to_db(bars)
+    print("Fetching M15 datasets across 5 markets (XAUUSD, EURUSD, GBPUSD, US100, BTCUSD)...")
+    xau_bars = fetch_binance_m15("PAXGUSDT", 92)
+    save_bars_to_db(xau_bars)
     gcf_check = fetch_gcf_m15_cross_check()
 
-    start_date = bars[0]["dt"].date().isoformat()
-    end_date = bars[-1]["dt"].date().isoformat()
-    print(f"Loaded {len(bars)} weekday M15 bars from {start_date} to {end_date} (Algiers GMT+1).")
+    market_bars = {
+        "XAUUSD": xau_bars,
+        "EURUSD": fetch_yahoo_m15("EURUSD=X"),
+        "GBPUSD": fetch_yahoo_m15("GBPUSD=X"),
+        "US100": fetch_yahoo_m15("NQ=F"),
+        "BTCUSD": fetch_binance_m15("BTCUSDT", 92),
+    }
 
-    configs = [
+    start_date = xau_bars[0]["dt"].date().isoformat()
+    end_date = xau_bars[-1]["dt"].date().isoformat()
+
+    xau_legacy_cfgs = [
         {
             "name": "Run 1: Exact As-Written Rules ($4-$15 Asia, $3 SL, $6 TP)",
-            "asia_start_hour": 0,
-            "asia_end_hour": 9,
-            "min_asia_w": 4.0,
-            "max_asia_w": 15.0,
-            "max_candle": 5.0,
-            "retest_tol": 1.5,
-            "sl_zone_depth": 2.1,
-            "rsi_buy_max": 65.0,
-            "rsi_sell_min": 35.0,
-            "sl_dollars": 3.0,
-            "structural_sl": False,
+            "asia_start_hour": 0, "asia_end_hour": 9, "min_asia_w": 4.0, "max_asia_w": 15.0,
+            "max_candle": 5.0, "retest_tol": 1.5, "sl_zone_depth": 2.1, "rsi_buy_max": 65.0,
+            "rsi_sell_min": 35.0, "sl_dollars": 3.0, "structural_sl": False, "digits": 2,
         },
         {
             "name": "Run 2: Unblocked Asia Range Only ($3 SL, $6 TP, 0.08 Lot)",
-            "asia_start_hour": 0,
-            "asia_end_hour": 9,
-            "min_asia_w": 4.0,
-            "max_asia_w": 120.0,
-            "max_candle": 5.0,
-            "retest_tol": 2.0,
-            "sl_zone_depth": 2.1,
-            "rsi_buy_max": 65.0,
-            "rsi_sell_min": 35.0,
-            "sl_dollars": 3.0,
-            "structural_sl": False,
+            "asia_start_hour": 0, "asia_end_hour": 9, "min_asia_w": 4.0, "max_asia_w": 120.0,
+            "max_candle": 5.0, "retest_tol": 2.0, "sl_zone_depth": 2.1, "rsi_buy_max": 65.0,
+            "rsi_sell_min": 35.0, "sl_dollars": 3.0, "structural_sl": False, "digits": 2,
         },
-        {
-            "name": "Run 3: 2026 Volatility-Calibrated Preset (Tokyo 01-07 $8-$65, Structural SL, $25 Risk)",
-            "asia_start_hour": 1,
-            "asia_end_hour": 7,
-            "min_asia_w": 8.0,
-            "max_asia_w": 65.0,
-            "max_candle": 10.0,
-            "retest_tol": 3.5,
-            "sl_zone_depth": 3.5,
-            "rsi_buy_max": 68.0,
-            "rsi_sell_min": 32.0,
-            "sl_dollars": 3.0,
-            "structural_sl": True,
-        },
+        _spec_to_cfg("XAUUSD"),
     ]
+    xau_results = [run_strategy_simulation(xau_bars, cfg, "XAUUSD") for cfg in xau_legacy_cfgs]
 
-    results = [run_strategy_simulation(bars, cfg) for cfg in configs]
-    save_backtest_to_db(results, start_date, end_date)
-    write_markdown_report(results, bars, gcf_check, start_date, end_date)
+    per_market_results = {
+        sym: (xau_results[2] if sym == "XAUUSD" else run_strategy_simulation(market_bars[sym], _spec_to_cfg(sym), sym))
+        for sym in ("XAUUSD", "EURUSD", "GBPUSD", "US100", "BTCUSD")
+    }
+    portfolio_res = simulate_combined_portfolio(per_market_results)
 
-    for res in results:
+    all_runs = xau_results + [per_market_results[s] for s in ("EURUSD", "GBPUSD", "US100", "BTCUSD")] + [portfolio_res]
+    save_backtest_to_db(all_runs, start_date, end_date)
+    write_markdown_report(xau_results, per_market_results, portfolio_res, gcf_check, start_date, end_date)
+
+    for r in all_runs:
         print(
-            f"[{res['cfg']['name']}] Trades={res['total_trades']} | Wins={res['wins']} | "
-            f"WR={res['win_rate_pct']}% | Net=${res['net_pnl_usd']:.2f} | "
-            f"MaxDailyLoss=-${res['max_daily_loss_usd']:.2f} | MaxDD=-${res['max_overall_dd_usd']:.2f} | "
-            f"PassP1={res['passed_ftm_phase1']}"
+            f"[{r['symbol']:12s}] Trades={r['total_trades']:2d} | WR={r['win_rate_pct']:5.1f}% | "
+            f"Net=${r['net_pnl_usd']:7.2f} | MaxDailyLoss=-${r['max_daily_loss_usd']:5.2f} | "
+            f"MaxDD=-${r['max_overall_dd_usd']:6.2f} | PassP1={r['passed_ftm_phase1']}"
         )
-    print(f"Saved full report to {REPORT_PATH}")
+    print(f"Saved full multi-market report to {REPORT_PATH}")
 
 
 if __name__ == "__main__":

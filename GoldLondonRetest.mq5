@@ -142,14 +142,131 @@ struct DailyState
 DailyState g_today;
 datetime   g_lastProcessedBar = 0;
 
+struct MarketProfile
+{
+   string label;
+   int    asiaStartH;
+   int    asiaEndH;
+   double minAsiaW;
+   double maxAsiaW;
+   double minBreakBody;
+   double retestTol;
+   double maxCandle;
+   double slBuffer;
+   double slMin;
+   double slMax;
+   double maxSpread;
+   double contractVal;
+   double maxLot;
+   double rsiBuyMax;
+   double rsiSellMin;
+   bool   useStructuralSL;
+};
+
 //+------------------------------------------------------------------+
-//| Helper: Check whether symbol matches XAUUSD / Gold               |
+//| Helper: Build Symbol-Specific Profile (5 Uncorrelated Markets)   |
 //+------------------------------------------------------------------+
-bool IsGoldSymbol()
+void GetMarketProfile(MarketProfile &mp)
 {
    string sym = _Symbol;
    StringToUpper(sym);
-   return (StringFind(sym, "XAU") >= 0 || StringFind(sym, "GOLD") >= 0);
+
+   mp.rsiBuyMax       = InpUse2026VolatilityScaling ? 68.0 : InpRsiBuyMax;
+   mp.rsiSellMin      = InpUse2026VolatilityScaling ? 32.0 : InpRsiSellMin;
+   mp.useStructuralSL = InpUse2026VolatilityScaling;
+
+   if(StringFind(sym, "EURUSD") >= 0)
+   {
+      mp.label        = "EURUSD";
+      mp.asiaStartH   = 1;     mp.asiaEndH = 7;
+      mp.minAsiaW     = 0.0010; mp.maxAsiaW = 0.0045;
+      mp.minBreakBody = 0.0002; mp.retestTol = 0.0007;
+      mp.maxCandle    = 0.0025; mp.slBuffer  = 0.0003;
+      mp.slMin        = 0.0008; mp.slMax     = 0.0018;
+      mp.maxSpread    = 0.00025;
+      mp.contractVal  = 100000.0;
+      mp.maxLot       = 0.25;
+   }
+   else if(StringFind(sym, "GBPUSD") >= 0)
+   {
+      mp.label        = "GBPUSD";
+      mp.asiaStartH   = 1;     mp.asiaEndH = 7;
+      mp.minAsiaW     = 0.0012; mp.maxAsiaW = 0.0050;
+      mp.minBreakBody = 0.00025; mp.retestTol = 0.0008;
+      mp.maxCandle    = 0.0030; mp.slBuffer  = 0.0003;
+      mp.slMin        = 0.0010; mp.slMax     = 0.0020;
+      mp.maxSpread    = 0.00030;
+      mp.contractVal  = 100000.0;
+      mp.maxLot       = 0.25;
+   }
+   else if(StringFind(sym, "US100") >= 0 || StringFind(sym, "NAS100") >= 0 || StringFind(sym, "USTEC") >= 0 || StringFind(sym, "NDX") >= 0)
+   {
+      mp.label        = "US100";
+      mp.asiaStartH   = 1;    mp.asiaEndH = 7;
+      mp.minAsiaW     = 60.0; mp.maxAsiaW = 220.0;
+      mp.minBreakBody = 10.0; mp.retestTol = 18.0;
+      mp.maxCandle    = 70.0; mp.slBuffer  = 10.0;
+      mp.slMin        = 35.0; mp.slMax     = 70.0;
+      mp.rsiBuyMax    = 62.0; mp.rsiSellMin = 38.0;
+      mp.maxSpread    = 3.5;
+      mp.contractVal  = 1.0;
+      mp.maxLot       = 0.70;
+   }
+   else if(StringFind(sym, "BTC") >= 0)
+   {
+      mp.label        = "BTCUSD";
+      mp.asiaStartH   = 1;     mp.asiaEndH = 7;
+      mp.minAsiaW     = 600.0; mp.maxAsiaW = 2000.0;
+      mp.minBreakBody = 40.0;  mp.retestTol = 200.0;
+      mp.maxCandle    = 600.0; mp.slBuffer  = 60.0;
+      mp.slMin        = 400.0; mp.slMax     = 900.0;
+      mp.rsiBuyMax    = 62.0;  mp.rsiSellMin = 38.0;
+      mp.maxSpread    = 45.0;
+      mp.contractVal  = 1.0;
+      mp.maxLot       = 0.06;
+   }
+   else if(!InpUse2026VolatilityScaling)
+   {
+      mp.label        = (StringFind(sym, "XAU") >= 0 || StringFind(sym, "GOLD") >= 0) ? "XAUUSD" : _Symbol;
+      mp.asiaStartH   = InpAsiaStartHour;
+      mp.asiaEndH     = InpAsiaEndHour;
+      mp.minAsiaW     = InpMinAsiaRangeDollars;
+      mp.maxAsiaW     = InpMaxAsiaRangeDollars;
+      mp.minBreakBody = InpMinBreakoutBodyDollars;
+      mp.retestTol    = InpRetestToleranceDollars;
+      mp.maxCandle    = InpMaxCandleSizeDollars;
+      mp.slBuffer     = 1.0;
+      mp.slMin        = InpStopLossDollars;
+      mp.slMax        = InpStopLossDollars;
+      mp.maxSpread    = InpMaxSpreadDollars;
+      mp.contractVal  = 100.0;
+      mp.maxLot       = InpBaseLotSize;
+   }
+   else
+   {
+      mp.label        = (StringFind(sym, "XAU") >= 0 || StringFind(sym, "GOLD") >= 0) ? "XAUUSD" : _Symbol;
+      mp.asiaStartH   = 1;    mp.asiaEndH = 7;
+      mp.minAsiaW     = 8.0;  mp.maxAsiaW = 65.0;
+      mp.minBreakBody = 0.50; mp.retestTol = 3.50;
+      mp.maxCandle    = 10.0; mp.slBuffer  = 1.0;
+      mp.slMin        = 3.0;  mp.slMax     = 7.0;
+      mp.maxSpread    = InpMaxSpreadDollars;
+      mp.contractVal  = 100.0;
+      mp.maxLot       = InpBaseLotSize;
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Helper: Check whether symbol is one of the 5 supported markets   |
+//+------------------------------------------------------------------+
+bool IsSupportedMarket()
+{
+   string sym = _Symbol;
+   StringToUpper(sym);
+   return (StringFind(sym, "XAU") >= 0 || StringFind(sym, "GOLD") >= 0
+        || StringFind(sym, "EURUSD") >= 0 || StringFind(sym, "GBPUSD") >= 0
+        || StringFind(sym, "US100") >= 0 || StringFind(sym, "NAS100") >= 0
+        || StringFind(sym, "USTEC") >= 0 || StringFind(sym, "BTC") >= 0);
 }
 
 //+------------------------------------------------------------------+
@@ -191,58 +308,20 @@ int GetAlgiersDayKey(const datetime algiersTime)
 }
 
 //+------------------------------------------------------------------+
-//| Helper: Get effective strategy parameters (Strict vs 2026 Preset)|
-//+------------------------------------------------------------------+
-void GetEffectiveParams(int &asiaStartH, int &asiaEndH,
-                        double &minAsiaW, double &maxAsiaW,
-                        double &maxCandle, double &retestTol,
-                        double &rsiBuyMax, double &rsiSellMin,
-                        bool &useStructuralSL)
-{
-   if(!InpUse2026VolatilityScaling)
-   {
-      asiaStartH      = InpAsiaStartHour;
-      asiaEndH        = InpAsiaEndHour;
-      minAsiaW        = InpMinAsiaRangeDollars;
-      maxAsiaW        = InpMaxAsiaRangeDollars;
-      maxCandle       = InpMaxCandleSizeDollars;
-      retestTol       = InpRetestToleranceDollars;
-      rsiBuyMax       = InpRsiBuyMax;
-      rsiSellMin      = InpRsiSellMin;
-      useStructuralSL = false;
-   }
-   else
-   {
-      // Calibrated 2026 Gold Volatility Preset (strictly $25 risk, 1:2 RR, 09:00-12:00 Algiers)
-      asiaStartH      = 1;     // Core Tokyo Range 01:00 - 07:00 Algiers
-      asiaEndH        = 7;
-      minAsiaW        = 8.0;
-      maxAsiaW        = 65.0;
-      maxCandle       = 10.0;
-      retestTol       = 3.50;
-      rsiBuyMax       = 68.0;
-      rsiSellMin      = 32.0;
-      useStructuralSL = true;
-   }
-}
-
-//+------------------------------------------------------------------+
 //| Helper: Calculate Lot Size keeping Risk strictly <= $25.00       |
 //+------------------------------------------------------------------+
-double CalculateSafeLotSize(const double slDollars)
+double CalculateSafeLotSize(const MarketProfile &mp, const double slDist)
 {
-   if(!InpUse2026VolatilityScaling)
-      return InpBaseLotSize;
+   if(!mp.useStructuralSL)
+      return mp.maxLot;
 
-   if(slDollars <= 0.0)
-      return InpBaseLotSize;
+   if(slDist <= 0.0 || mp.contractVal <= 0.0)
+      return 0.01;
 
-   // On standard XAUUSD (100 oz contract): $1 move at 0.01 lot = $1.00
-   // Risk = Lot * 100 * slDollars  => Lot = Risk / (100 * slDollars)
-   double rawLot = InpRiskPerTradeUSD / (100.0 * slDollars);
+   double rawLot = InpRiskPerTradeUSD / (mp.contractVal * slDist);
    double stepped = MathFloor(rawLot / 0.01) * 0.01;
    if(stepped < 0.01) stepped = 0.01;
-   if(stepped > InpBaseLotSize) stepped = InpBaseLotSize; // Never exceed 0.08 lot
+   if(stepped > mp.maxLot) stepped = mp.maxLot;
    return NormalizeDouble(stepped, 2);
 }
 
@@ -376,42 +455,46 @@ bool IsHighImpactNewsWindow(const datetime nowServer, const datetime nowAlgiers,
    if(!InpUseNativeNewsFilter || MQLInfoInteger(MQL_TESTER))
       return false;
 
-   MqlCalendarValue values[];
+   string currencies[3] = {"USD", "EUR", "GBP"};
    datetime fromTime = nowServer - InpNewsBufferMinutes * 60;
    datetime toTime   = nowServer + InpNewsBufferMinutes * 60;
 
-   ResetLastError();
-   int count = CalendarValueHistory(values, fromTime, toTime, NULL, "USD");
-   if(count <= 0)
-      return false;
-
-   for(int i = 0; i < count; i++)
+   for(int c = 0; c < 3; c++)
    {
-      MqlCalendarEvent ev;
-      if(!CalendarEventById(values[i].event_id, ev))
+      MqlCalendarValue values[];
+      ResetLastError();
+      int count = CalendarValueHistory(values, fromTime, toTime, NULL, currencies[c]);
+      if(count <= 0)
          continue;
 
-      bool isHigh = (ev.importance == CALENDAR_IMPORTANCE_HIGH);
-      string nameUpper = ev.name;
-      StringToUpper(nameUpper);
-
-      bool isKeyGoldDriver = (StringFind(nameUpper, "CPI") >= 0
-                           || StringFind(nameUpper, "NON-FARM") >= 0
-                           || StringFind(nameUpper, "NONFARM") >= 0
-                           || StringFind(nameUpper, "NFP") >= 0
-                           || StringFind(nameUpper, "FOMC") >= 0
-                           || StringFind(nameUpper, "FED ") >= 0
-                           || StringFind(nameUpper, "INTEREST RATE") >= 0
-                           || StringFind(nameUpper, "POWELL") >= 0
-                           || StringFind(nameUpper, "PPI") >= 0
-                           || StringFind(nameUpper, "GDP") >= 0
-                           || StringFind(nameUpper, "PCE") >= 0
-                           || StringFind(nameUpper, "GOLD") >= 0);
-
-      if(isHigh || isKeyGoldDriver)
+      for(int i = 0; i < count; i++)
       {
-         newsTitleOut = "USD News: " + ev.name;
-         return true;
+         MqlCalendarEvent ev;
+         if(!CalendarEventById(values[i].event_id, ev))
+            continue;
+
+         bool isHigh = (ev.importance == CALENDAR_IMPORTANCE_HIGH);
+         string nameUpper = ev.name;
+         StringToUpper(nameUpper);
+
+         bool isKeyDriver = (currencies[c] == "USD") &&
+                            (StringFind(nameUpper, "CPI") >= 0
+                          || StringFind(nameUpper, "NON-FARM") >= 0
+                          || StringFind(nameUpper, "NONFARM") >= 0
+                          || StringFind(nameUpper, "NFP") >= 0
+                          || StringFind(nameUpper, "FOMC") >= 0
+                          || StringFind(nameUpper, "FED ") >= 0
+                          || StringFind(nameUpper, "INTEREST RATE") >= 0
+                          || StringFind(nameUpper, "POWELL") >= 0
+                          || StringFind(nameUpper, "PPI") >= 0
+                          || StringFind(nameUpper, "GDP") >= 0
+                          || StringFind(nameUpper, "PCE") >= 0);
+
+         if(isHigh || isKeyDriver)
+         {
+            newsTitleOut = currencies[c] + " News: " + ev.name;
+            return true;
+         }
       }
    }
 
@@ -488,10 +571,10 @@ void LogEventToCsv(const string eventType, const string direction,
 
    string timeStr = TimeToString(ServerToAlgiers(TimeCurrent()), TIME_DATE | TIME_MINUTES);
    FileWrite(handle, timeStr, _Symbol, eventType, direction,
-             DoubleToString(entry, 2), DoubleToString(sl, 2), DoubleToString(tp, 2),
-             DoubleToString(lot, 2), DoubleToString(rsiVal, 2), DoubleToString(emaVal, 2),
-             DoubleToString(spreadVal, 2), DoubleToString(g_today.asiaHigh, 2),
-             DoubleToString(g_today.asiaLow, 2), note);
+             DoubleToString(entry, _Digits), DoubleToString(sl, _Digits), DoubleToString(tp, _Digits),
+             DoubleToString(lot, 2), DoubleToString(rsiVal, 2), DoubleToString(emaVal, _Digits),
+             DoubleToString(spreadVal, _Digits), DoubleToString(g_today.asiaHigh, _Digits),
+             DoubleToString(g_today.asiaLow, _Digits), note);
    FileClose(handle);
 }
 
@@ -500,7 +583,7 @@ void LogEventToCsv(const string eventType, const string direction,
 //+------------------------------------------------------------------+
 void DrawSessionVisuals(const int dayKey, const datetime asiaStartSrv, const datetime asiaEndSrv,
                         const datetime londonStartSrv, const datetime londonEndSrv,
-                        const double asiaH, const double asiaL, const bool isValid)
+                        const double asiaH, const double asiaL, const double pad, const bool isValid)
 {
    string keyStr = IntegerToString(dayKey);
 
@@ -522,7 +605,6 @@ void DrawSessionVisuals(const int dayKey, const datetime asiaStartSrv, const dat
 
    // 2. London Trading Window Highlight Box
    string lonName = g_objPrefix + "LondonBox_" + keyStr;
-   double pad = 2.0;
    if(ObjectFind(0, lonName) < 0)
       ObjectCreate(0, lonName, OBJ_RECTANGLE, 0, londonStartSrv, asiaH + pad, londonEndSrv, asiaL - pad);
    else
@@ -598,7 +680,7 @@ void DrawRetestMarker(const datetime barTime, const double levelPrice,
       string lblName = g_objPrefix + "RSI_" + tag;
       if(ObjectFind(0, lblName) < 0)
       {
-         double anchorPrice = isBuy ? (levelPrice - tolDollars - 1.2) : (levelPrice + tolDollars + 1.2);
+         double anchorPrice = isBuy ? (levelPrice - tolDollars * 1.35) : (levelPrice + tolDollars * 1.35);
          ObjectCreate(0, lblName, OBJ_TEXT, 0, barTime, anchorPrice);
          ObjectSetString(0, lblName, OBJPROP_TEXT, StringFormat("%s RSI:%.1f", isBuy ? "BUY" : "SELL", rsiVal));
          ObjectSetInteger(0, lblName, OBJPROP_COLOR, isBuy ? clrLimeGreen : clrOrangeRed);
@@ -635,7 +717,7 @@ void SetDashLabel(const string id, const int x, const int y, const string text,
 //+------------------------------------------------------------------+
 //| Helper: Update On-Chart FTM & Strategy Dashboard                 |
 //+------------------------------------------------------------------+
-void UpdateDashboard(const datetime nowAlgiers, const double curEma, const double curRsi,
+void UpdateDashboard(const MarketProfile &mp, const datetime nowAlgiers, const double curEma, const double curRsi,
                      const double curSpread, const double prevCandleSize, const string newsText)
 {
    if(!InpDrawDashboard)
@@ -648,7 +730,7 @@ void UpdateDashboard(const datetime nowAlgiers, const double curEma, const doubl
       ObjectSetInteger(0, bgName, OBJPROP_CORNER, CORNER_RIGHT_UPPER);
       ObjectSetInteger(0, bgName, OBJPROP_XDISTANCE, 12);
       ObjectSetInteger(0, bgName, OBJPROP_YDISTANCE, 18);
-      ObjectSetInteger(0, bgName, OBJPROP_XSIZE, 385);
+      ObjectSetInteger(0, bgName, OBJPROP_XSIZE, 410);
       ObjectSetInteger(0, bgName, OBJPROP_YSIZE, 275);
       ObjectSetInteger(0, bgName, OBJPROP_BGCOLOR, C'14,18,26');
       ObjectSetInteger(0, bgName, OBJPROP_BORDER_TYPE, BORDER_FLAT);
@@ -666,12 +748,11 @@ void UpdateDashboard(const datetime nowAlgiers, const double curEma, const doubl
                     : (dt.hour < InpTradeStartHour ? "ASIA RANGE BUILDING" : "OUTSIDE WINDOW (LOCKED)"));
    color sessClr = inWindow ? clrLimeGreen : clrSilver;
 
-   int aS, aE; double minW, maxW, maxC, tol, rMax, rMin; bool sSL;
-   GetEffectiveParams(aS, aE, minW, maxW, maxC, tol, rMax, rMin, sSL);
-
    string rangeTxt = !g_today.asiaReady ? "Building..."
-                   : StringFormat("H:%.2f L:%.2f (W:$%.2f) [%s]",
-                                  g_today.asiaHigh, g_today.asiaLow, g_today.asiaWidth,
+                   : StringFormat("H:%s L:%s (W:%s) [%s]",
+                                  DoubleToString(g_today.asiaHigh, _Digits),
+                                  DoubleToString(g_today.asiaLow, _Digits),
+                                  DoubleToString(g_today.asiaWidth, _Digits),
                                   g_today.asiaValid ? "VALID" : "SKIP");
    color rangeClr  = (!g_today.asiaReady) ? clrSilver : (g_today.asiaValid ? clrAqua : clrOrange);
 
@@ -685,14 +766,15 @@ void UpdateDashboard(const datetime nowAlgiers, const double curEma, const doubl
    double ddLeft = bal - (InpAccountSizeUSD - InpFtmStaticLossLimitUSD);
 
    int x = 24;
-   SetDashLabel("L01", x, 26,  "GOLD LONDON RETEST | FTM 2-STEP+ $5K", clrGold, 10, true);
+   SetDashLabel("L01", x, 26,  mp.label + " LONDON RETEST | FTM/FTMO $5K", clrGold, 10, true);
    SetDashLabel("L02", x, 46,  "Algiers (GMT+1): " + TimeToString(nowAlgiers, TIME_DATE | TIME_MINUTES), clrWhite, 9);
    SetDashLabel("L03", x, 64,  "Session: " + sessLabel, sessClr, 9, true);
-   SetDashLabel("L04", x, 84,  StringFormat("Preset: %s (%02d-%02d Asia)", InpUse2026VolatilityScaling ? "2026 Vol-Scaled" : "Strict Original", aS, aE), clrLightSkyBlue, 9);
+   SetDashLabel("L04", x, 84,  StringFormat("Mode: %s (%02d-%02d Asia | MaxLot %.2f)", mp.useStructuralSL ? "Auto-Scaled" : "Strict", mp.asiaStartH, mp.asiaEndH, mp.maxLot), clrLightSkyBlue, 9);
    SetDashLabel("L05", x, 102, "Asia: " + rangeTxt, rangeClr, 9);
-   SetDashLabel("L06", x, 122, StringFormat("EMA50: %.2f | RSI(14): %.1f", curEma, curRsi), clrWhite, 9);
-   SetDashLabel("L07", x, 140, StringFormat("Spread: $%.2f (Max $%.2f) | PrevBar: $%.2f", curSpread, InpMaxSpreadDollars, prevCandleSize),
-                (curSpread <= InpMaxSpreadDollars && prevCandleSize <= maxC) ? clrLightGreen : clrTomato, 9);
+   SetDashLabel("L06", x, 122, StringFormat("EMA50: %s | RSI(14): %.1f", DoubleToString(curEma, _Digits), curRsi), clrWhite, 9);
+   SetDashLabel("L07", x, 140, StringFormat("Spread: %s (Max %s) | PrevBar: %s",
+                DoubleToString(curSpread, _Digits), DoubleToString(mp.maxSpread, _Digits), DoubleToString(prevCandleSize, _Digits)),
+                (curSpread <= mp.maxSpread && prevCandleSize <= mp.maxCandle) ? clrLightGreen : clrTomato, 9);
    SetDashLabel("L08", x, 158, "News (+/-60m): " + newsText, (newsText == "No News") ? clrLightGreen : clrTomato, 9);
    SetDashLabel("L09", x, 178, StringFormat("Alerts Today: %d/%d | Losses: %d/2 | PnL: $%.2f",
                 g_today.alertsToday, InpMaxAlertsPerDay, g_today.lossesToday, g_today.closedPnlToday), clrWhite, 9);
@@ -709,10 +791,10 @@ void UpdateDashboard(const datetime nowAlgiers, const double curEma, const doubl
 int OnInit()
 {
    if(_Period != PERIOD_M15)
-      Alert("[GoldLondonRetest] Please attach this indicator to the XAUUSD M15 chart ONLY!");
+      Alert("[LondonRetest] Please attach this indicator to an M15 chart ONLY!");
 
-   if(!IsGoldSymbol())
-      Print("[GoldLondonRetest] Warning: Current symbol is ", _Symbol, ". Designed for XAUUSD (Gold).");
+   if(!IsSupportedMarket())
+      Print("[LondonRetest] Note: Symbol ", _Symbol, " uses XAUUSD default bounds. Supported native profiles: XAUUSD, EURUSD, GBPUSD, US100, BTCUSD.");
 
    SetIndexBuffer(0, ExtEmaBuffer, INDICATOR_DATA);
    SetIndexBuffer(1, ExtBuyArrowBuffer, INDICATOR_DATA);
@@ -815,10 +897,18 @@ int OnCalculate(const int rates_total,
    }
 
    int offsetSec = GetServerToAlgiersOffsetSeconds();
-   int aStartH, aEndH;
-   double minAsiaW, maxAsiaW, maxCandle, retestTol, rsiBuyMax, rsiSellMin;
-   bool useStructuralSL;
-   GetEffectiveParams(aStartH, aEndH, minAsiaW, maxAsiaW, maxCandle, retestTol, rsiBuyMax, rsiSellMin, useStructuralSL);
+   MarketProfile mp;
+   GetMarketProfile(mp);
+   int aStartH       = mp.asiaStartH;
+   int aEndH         = mp.asiaEndH;
+   double minAsiaW   = mp.minAsiaW;
+   double maxAsiaW   = mp.maxAsiaW;
+   double maxCandle  = mp.maxCandle;
+   double retestTol  = mp.retestTol;
+   double rsiBuyMax  = mp.rsiBuyMax;
+   double rsiSellMin = mp.rsiSellMin;
+   bool useStructuralSL = mp.useStructuralSL;
+   double arrowPad   = retestTol * 0.35;
 
    //--- 1. Historical & Visual Replay Pass (Draws Asia boxes, EMA, Breakout & Retest Arrows)
    int curDay = -1;
@@ -874,7 +964,7 @@ int OnCalculate(const int rates_total,
          {
             double w = dAsiaH - dAsiaL;
             dAsiaValid = (w >= minAsiaW && w <= maxAsiaW);
-            DrawSessionVisuals(dKey, dAsiaStartSrv, dAsiaEndSrv, dLonStartSrv, dLonEndSrv, dAsiaH, dAsiaL, dAsiaValid);
+            DrawSessionVisuals(dKey, dAsiaStartSrv, dAsiaEndSrv, dLonStartSrv, dLonEndSrv, dAsiaH, dAsiaL, retestTol * 0.5, dAsiaValid);
          }
          continue;
       }
@@ -884,15 +974,15 @@ int OnCalculate(const int rates_total,
 
       // Check for strong M15 Breakout Close
       double body = MathAbs(close[i] - open[i]);
-      if(!dBrokeUp && close[i] > dAsiaH && (close[i] - open[i]) >= InpMinBreakoutBodyDollars)
+      if(!dBrokeUp && close[i] > dAsiaH && (close[i] - open[i]) >= mp.minBreakBody)
       {
          dBrokeUp = true;
-         ExtBreakoutBuffer[i] = low[i] - 0.8;
+         ExtBreakoutBuffer[i] = low[i] - arrowPad * 0.8;
       }
-      else if(!dBrokeDn && close[i] < dAsiaL && (open[i] - close[i]) >= InpMinBreakoutBodyDollars)
+      else if(!dBrokeDn && close[i] < dAsiaL && (open[i] - close[i]) >= mp.minBreakBody)
       {
          dBrokeDn = true;
-         ExtBreakoutBuffer[i] = high[i] + 0.8;
+         ExtBreakoutBuffer[i] = high[i] + arrowPad * 0.8;
       }
 
       // Entry evaluation strictly inside London Window (09:00 - 12:00 Algiers Time)
@@ -912,27 +1002,28 @@ int OnCalculate(const int rates_total,
       double rsiVal = ExtRsiCalcBuffer[i];
 
       // BUY Retest Check
+      double slZoneDepth = useStructuralSL ? retestTol : (mp.slMin * 0.7);
       if(dBrokeUp
-         && low[i] <= dAsiaH + retestTol && low[i] >= dAsiaH - (useStructuralSL ? 3.5 : InpStopLossDollars * 0.7)
+         && low[i] <= dAsiaH + retestTol && low[i] >= dAsiaH - slZoneDepth
          && close[i] > dAsiaH
          && close[i] > open[i]
          && emaVal < close[i]
          && rsiVal >= InpRsiBuyMin && rsiVal <= rsiBuyMax)
       {
-         ExtBuyArrowBuffer[i] = low[i] - 1.0;
+         ExtBuyArrowBuffer[i] = low[i] - arrowPad;
          DrawRetestMarker(time[i], dAsiaH, retestTol, true, rsiVal);
          dTrades++;
          dBrokeUp = false;
       }
       // SELL Retest Check
       else if(dBrokeDn
-              && high[i] >= dAsiaL - retestTol && high[i] <= dAsiaL + (useStructuralSL ? 3.5 : InpStopLossDollars * 0.7)
+              && high[i] >= dAsiaL - retestTol && high[i] <= dAsiaL + slZoneDepth
               && close[i] < dAsiaL
               && close[i] < open[i]
               && emaVal > close[i]
               && rsiVal >= rsiSellMin && rsiVal <= InpRsiSellMax)
       {
-         ExtSellArrowBuffer[i] = high[i] + 1.0;
+         ExtSellArrowBuffer[i] = high[i] + arrowPad;
          DrawRetestMarker(time[i], dAsiaL, retestTol, false, rsiVal);
          dTrades++;
          dBrokeDn = false;
@@ -1030,19 +1121,22 @@ int OnCalculate(const int rates_total,
       }
       else if(!g_today.asiaReady || !g_today.asiaValid)
       {
-         g_today.lastBlockReason = StringFormat("Asia range $%.2f outside [$%.0f-$%.0f]", g_today.asiaWidth, minAsiaW, maxAsiaW);
+         g_today.lastBlockReason = StringFormat("Asia range %s outside [%s-%s]",
+                                   DoubleToString(g_today.asiaWidth, _Digits),
+                                   DoubleToString(minAsiaW, _Digits),
+                                   DoubleToString(maxAsiaW, _Digits));
       }
       else if(newsBlocked)
       {
          g_today.lastBlockReason = "Blocked by " + newsStr;
       }
-      else if(curSpread > InpMaxSpreadDollars)
+      else if(curSpread > mp.maxSpread)
       {
-         g_today.lastBlockReason = StringFormat("Spread $%.2f > $%.2f", curSpread, InpMaxSpreadDollars);
+         g_today.lastBlockReason = StringFormat("Spread %s > %s", DoubleToString(curSpread, _Digits), DoubleToString(mp.maxSpread, _Digits));
       }
       else if(lastClosed >= 2 && (high[lastClosed - 1] - low[lastClosed - 1]) > maxCandle)
       {
-         g_today.lastBlockReason = StringFormat("Pre-entry candle $%.2f > $%.2f", high[lastClosed - 1] - low[lastClosed - 1], maxCandle);
+         g_today.lastBlockReason = StringFormat("Pre-entry candle %s > %s", DoubleToString(high[lastClosed - 1] - low[lastClosed - 1], _Digits), DoubleToString(maxCandle, _Digits));
       }
       else
       {
@@ -1074,20 +1168,20 @@ int OnCalculate(const int rates_total,
 
          if(sigDir != 0 && g_today.lastAlertedBarTime != time[lastClosed])
          {
-            double entry = NormalizeDouble(close[lastClosed], 2);
-            double slDist = InpStopLossDollars;
+            double entry = NormalizeDouble(close[lastClosed], _Digits);
+            double slDist = mp.slMin;
             if(useStructuralSL)
             {
                double rawDist = (sigDir == 1)
-                                ? (entry - (MathMin(low[lastClosed], g_today.asiaHigh) - 1.0))
-                                : ((MathMax(high[lastClosed], g_today.asiaLow) + 1.0) - entry);
-               slDist = MathMax(3.0, MathMin(rawDist, 7.0));
+                                ? (entry - (MathMin(low[lastClosed], g_today.asiaHigh) - mp.slBuffer))
+                                : ((MathMax(high[lastClosed], g_today.asiaLow) + mp.slBuffer) - entry);
+               slDist = MathMax(mp.slMin, MathMin(rawDist, mp.slMax));
             }
             double tpDist = slDist * 2.0;
-            double sl     = NormalizeDouble((sigDir == 1) ? (entry - slDist) : (entry + slDist), 2);
-            double tp     = NormalizeDouble((sigDir == 1) ? (entry + tpDist) : (entry - tpDist), 2);
-            double lot    = CalculateSafeLotSize(slDist);
-            double risk   = NormalizeDouble(lot * 100.0 * slDist, 0);
+            double sl     = NormalizeDouble((sigDir == 1) ? (entry - slDist) : (entry + slDist), _Digits);
+            double tp     = NormalizeDouble((sigDir == 1) ? (entry + tpDist) : (entry - tpDist), _Digits);
+            double lot    = CalculateSafeLotSize(mp, slDist);
+            double risk   = NormalizeDouble(lot * mp.contractVal * slDist, 0);
             double reward = NormalizeDouble(risk * 2.0, 0);
 
             string dirStr    = (sigDir == 1) ? "BUY" : "SELL";
@@ -1096,16 +1190,17 @@ int OnCalculate(const int rates_total,
             string algTimeHM = StringFormat("%02d:%02d", barDt.hour, barDt.min);
 
             string tgMsg = StringFormat(
-               "GOLD SIGNAL - %s\n"
-               "Entry: %.2f\n"
-               "Stop Loss: %.2f\n"
-               "Take Profit: %.2f\n"
+               "%s SIGNAL - %s\n"
+               "Entry: %s\n"
+               "Stop Loss: %s\n"
+               "Take Profit: %s\n"
                "Lot: %.2f\n"
                "Reason: %s, RSI %.0f, No News.\n"
                "Risk: $%.0f | Reward: $%.0f\n"
                "Time: %s Algiers Time\n"
                "Confirm in MT5 manually. Trade duration must be > 5 minutes.",
-               dirStr, entry, sl, tp, lot, levelDesc, rsiClosed, risk, reward, algTimeHM
+               mp.label, dirStr, DoubleToString(entry, _Digits), DoubleToString(sl, _Digits), DoubleToString(tp, _Digits),
+               lot, levelDesc, rsiClosed, risk, reward, algTimeHM
             );
 
             SendTelegramMessage(tgMsg);
@@ -1133,7 +1228,7 @@ int OnCalculate(const int rates_total,
       }
    }
 
-   UpdateDashboard(nowAlgiers, ExtEmaBuffer[liveBar], ExtRsiCalcBuffer[liveBar], curSpread, prevSize, newsStr);
+   UpdateDashboard(mp, nowAlgiers, ExtEmaBuffer[liveBar], ExtRsiCalcBuffer[liveBar], curSpread, prevSize, newsStr);
    return rates_total;
 }
 //+------------------------------------------------------------------+
