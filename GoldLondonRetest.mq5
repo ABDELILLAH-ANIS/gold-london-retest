@@ -48,9 +48,9 @@ input group "=== 2. ALGIERS TIMEZONE (GMT+1) & SESSION WINDOW ==="
 input bool     InpAutoDetectAlgiersFromGMT = true;   // Auto-calculate Algiers (GMT+1) from TimeGMT()
 input int      InpServerToAlgiersOffsetHrs = 0;      // Fallback offset (Algiers - Server) in Tester
 input int      InpAsiaStartHour          = 0;        // Asia Range Start Hour (Algiers Time)
-input int      InpAsiaEndHour            = 9;        // Asia Range End Hour (Algiers Time)
-input int      InpTradeStartHour         = 9;        // London Window Start Hour (Algiers Time)
-input int      InpTradeEndHour           = 12;       // London Window End Hour (Algiers Time)
+input int      InpAsiaEndHour            = 6;        // Asia Range End Hour (Algiers Time)
+input int      InpTradeStartHour         = 6;        // Trading Window Start Hour (Algiers Time)
+input int      InpTradeEndHour           = 18;       // Trading Window End Hour (Algiers Time)
 
 input group "=== 3. STRATEGY PRESET & VOLATILITY SCALING ==="
 input bool     InpUse2026VolatilityScaling = true;   // True = Calibrated 2026 Preset ($8-$65 Tokyo 01-07, Structural SL)
@@ -180,7 +180,7 @@ void GetMarketProfile(MarketProfile &mp)
    if(StringFind(sym, "EURUSD") >= 0)
    {
       mp.label        = "EURUSD";
-      mp.asiaStartH   = 1;     mp.asiaEndH = 7;
+      mp.asiaStartH   = 0;     mp.asiaEndH = 6;
       mp.minAsiaW     = 0.0010; mp.maxAsiaW = 0.0045;
       mp.minBreakBody = 0.0002; mp.retestTol = 0.0007;
       mp.maxCandle    = 0.0025; mp.slBuffer  = 0.0003;
@@ -192,7 +192,7 @@ void GetMarketProfile(MarketProfile &mp)
    else if(StringFind(sym, "GBPUSD") >= 0)
    {
       mp.label        = "GBPUSD";
-      mp.asiaStartH   = 1;     mp.asiaEndH = 7;
+      mp.asiaStartH   = 0;     mp.asiaEndH = 6;
       mp.minAsiaW     = 0.0012; mp.maxAsiaW = 0.0050;
       mp.minBreakBody = 0.00025; mp.retestTol = 0.0008;
       mp.maxCandle    = 0.0030; mp.slBuffer  = 0.0003;
@@ -204,7 +204,7 @@ void GetMarketProfile(MarketProfile &mp)
    else if(StringFind(sym, "US100") >= 0 || StringFind(sym, "NAS100") >= 0 || StringFind(sym, "USTEC") >= 0 || StringFind(sym, "NDX") >= 0)
    {
       mp.label        = "US100";
-      mp.asiaStartH   = 1;    mp.asiaEndH = 7;
+      mp.asiaStartH   = 0;    mp.asiaEndH = 6;
       mp.minAsiaW     = 60.0; mp.maxAsiaW = 220.0;
       mp.minBreakBody = 10.0; mp.retestTol = 18.0;
       mp.maxCandle    = 70.0; mp.slBuffer  = 10.0;
@@ -217,7 +217,7 @@ void GetMarketProfile(MarketProfile &mp)
    else if(StringFind(sym, "BTC") >= 0)
    {
       mp.label        = "BTCUSD";
-      mp.asiaStartH   = 1;     mp.asiaEndH = 7;
+      mp.asiaStartH   = 0;     mp.asiaEndH = 6;
       mp.minAsiaW     = 600.0; mp.maxAsiaW = 2000.0;
       mp.minBreakBody = 40.0;  mp.retestTol = 200.0;
       mp.maxCandle    = 600.0; mp.slBuffer  = 60.0;
@@ -247,7 +247,7 @@ void GetMarketProfile(MarketProfile &mp)
    else
    {
       mp.label        = (StringFind(sym, "XAU") >= 0 || StringFind(sym, "GOLD") >= 0) ? "XAUUSD" : _Symbol;
-      mp.asiaStartH   = 1;    mp.asiaEndH = 7;
+      mp.asiaStartH   = 0;    mp.asiaEndH = 6;
       mp.minAsiaW     = 8.0;  mp.maxAsiaW = 65.0;
       mp.minBreakBody = 0.50; mp.retestTol = 3.50;
       mp.maxCandle    = 10.0; mp.slBuffer  = 1.0;
@@ -746,7 +746,7 @@ void UpdateDashboard(const MarketProfile &mp, const datetime nowAlgiers, const d
    bool inWindow  = (isWeekday && dt.hour >= InpTradeStartHour && dt.hour < InpTradeEndHour);
 
    string sessLabel = !isWeekday ? "WEEKEND (NO TRADE)"
-                    : (inWindow ? "LONDON OPEN ACTIVE (09:00-12:00)"
+                    : (inWindow ? StringFormat("SESSION ACTIVE (%02d:00-%02d:00)", InpTradeStartHour, InpTradeEndHour)
                     : (dt.hour < InpTradeStartHour ? "ASIA RANGE BUILDING" : "OUTSIDE WINDOW (LOCKED)"));
    color sessClr = inWindow ? clrLimeGreen : clrSilver;
 
@@ -1134,7 +1134,7 @@ int OnCalculate(const int rates_total,
 
       if(!inLondonWindow)
       {
-         g_today.lastBlockReason = "Outside 09:00-12:00 Algiers";
+         g_today.lastBlockReason = StringFormat("Outside %02d:00-%02d:00 Algiers", InpTradeStartHour, InpTradeEndHour);
       }
       else if(g_today.stoppedByTwoLosses)
       {

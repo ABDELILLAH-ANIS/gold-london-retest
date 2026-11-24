@@ -33,8 +33,8 @@ MARKET_SPECS: dict[str, dict] = {
     "XAUUSD": {
         "label": "Gold (XAUUSD)",
         "digits": 2,
-        "asia_start_h": 1,
-        "asia_end_h": 7,
+        "asia_start_h": 0,
+        "asia_end_h": 6,
         "min_asia_w": 8.0,
         "max_asia_w": 65.0,
         "min_breakout_body": 0.50,
@@ -54,8 +54,8 @@ MARKET_SPECS: dict[str, dict] = {
     "EURUSD": {
         "label": "EUR/USD",
         "digits": 5,
-        "asia_start_h": 1,
-        "asia_end_h": 7,
+        "asia_start_h": 0,
+        "asia_end_h": 6,
         "min_asia_w": 0.0010,
         "max_asia_w": 0.0045,
         "min_breakout_body": 0.0002,
@@ -75,8 +75,8 @@ MARKET_SPECS: dict[str, dict] = {
     "GBPUSD": {
         "label": "GBP/USD",
         "digits": 5,
-        "asia_start_h": 1,
-        "asia_end_h": 7,
+        "asia_start_h": 0,
+        "asia_end_h": 6,
         "min_asia_w": 0.0012,
         "max_asia_w": 0.0050,
         "min_breakout_body": 0.00025,
@@ -96,8 +96,8 @@ MARKET_SPECS: dict[str, dict] = {
     "US100": {
         "label": "Nasdaq 100 (US100)",
         "digits": 2,
-        "asia_start_h": 1,
-        "asia_end_h": 7,
+        "asia_start_h": 0,
+        "asia_end_h": 6,
         "min_asia_w": 60.0,
         "max_asia_w": 220.0,
         "min_breakout_body": 10.0,
@@ -117,8 +117,8 @@ MARKET_SPECS: dict[str, dict] = {
     "BTCUSD": {
         "label": "Bitcoin (BTCUSD)",
         "digits": 2,
-        "asia_start_h": 1,
-        "asia_end_h": 7,
+        "asia_start_h": 0,
+        "asia_end_h": 6,
         "min_asia_w": 600.0,
         "max_asia_w": 2000.0,
         "min_breakout_body": 40.0,
@@ -510,11 +510,11 @@ def evaluate_market(
     in_window = (
         bar_alg.date() == today_date
         and bar_alg.weekday() < 5
-        and 9 <= bar_alg.hour < 12
+        and 6 <= bar_alg.hour < 18
         and (now_alg - bar_alg).total_seconds() <= 2700
     )
 
-    action_note = "Outside 09:00-12:00 Algiers window"
+    action_note = "Outside 06:00-18:00 Algiers window"
     if in_window:
         if state["stopped_two_losses"] or state["losses_today"] >= 2:
             action_note = "Stopped: 2 losses reached"
@@ -640,7 +640,7 @@ def evaluate_market(
                     state["active_signals"].append(
                         {"symbol": market_key, "dir": sig_dir, "entry": entry, "sl": sl, "tp": tp, "resolved": False}
                     )
-            elif action_note == "Outside 09:00-12:00 Algiers window":
+            elif action_note == "Outside 06:00-18:00 Algiers window":
                 action_note = "In window — waiting for valid Break+Retest setup"
 
     return {
@@ -727,11 +727,11 @@ def evaluate_xau_psych_strategy(
     in_window = (
         bar_alg.date() == today_date
         and bar_alg.weekday() < 5
-        and 9 <= bar_alg.hour < 12
+        and 6 <= bar_alg.hour < 18
         and (now_alg - bar_alg).total_seconds() <= 2700
     )
 
-    action_note = "Outside 09:00-12:00 Algiers window"
+    action_note = "Outside 06:00-18:00 Algiers window"
     if in_window:
         if state["stopped_two_losses"] or state["losses_today"] >= 2:
             action_note = "Stopped: 2 losses reached"
@@ -931,9 +931,9 @@ def evaluate_once(
         state["sent_two_loss_msg"] = True
 
     is_weekday = now_alg.weekday() < 5
-    # Send automatic 09:00 morning briefing on first weekday scan in 09:00-09:45 Algiers Time
+    # Send automatic 06:00 morning briefing on first weekday scan in 06:00-06:45 Algiers Time
     if (
-        (is_weekday and now_alg.hour == 9 and now_alg.minute <= 45 and not state["sent_morning_brief"] and not dry_run)
+        (is_weekday and now_alg.hour == 6 and now_alg.minute <= 45 and not state["sent_morning_brief"] and not dry_run)
         or send_brief_now
     ):
         if bot_token and chat_id:
@@ -944,7 +944,7 @@ def evaluate_once(
 
     if (
         is_weekday
-        and 12 <= now_alg.hour <= 13
+        and 18 <= now_alg.hour <= 19
         and state["alerts_today"] == 0
         and not state["sent_no_setup_msg"]
         and not dry_run
@@ -953,7 +953,7 @@ def evaluate_once(
             send_telegram_text(
                 bot_token,
                 chat_id,
-                "No valid setup today across XAUUSD, EURUSD, GBPUSD, US100, BTCUSD. No trade.",
+                "No valid setup today (06:00-18:00) across XAUUSD, EURUSD, GBPUSD, US100, BTCUSD. No trade.",
             )
         state["sent_no_setup_msg"] = True
 
@@ -1005,16 +1005,16 @@ def _safe_evaluate(
 
 
 def run_session_loop(strict_mode: bool = False) -> None:
-    """Run across today's 09:00-12:05 Algiers London session."""
-    print("Starting Multi-Market London Retest Session Loop (09:00-12:05 Algiers Time)...")
+    """Run across today's 06:00-18:05 Algiers trading session."""
+    print("Starting Multi-Market Retest Session Loop (06:00-18:05 Algiers Time)...")
     while True:
         now_alg = datetime.datetime.now(ALGIERS_TZ)
         if now_alg.weekday() >= 5:
             print("Weekend detected — exiting session loop cleanly.")
             break
         _safe_evaluate(strict_mode=strict_mode, status_report=True)
-        if now_alg.hour >= 12:
-            print("12:00+ Algiers Time reached — session complete.")
+        if now_alg.hour >= 18:
+            print("18:00+ Algiers Time reached — session complete.")
             break
         wait_s = seconds_until_next_m15_close(datetime.datetime.now(datetime.timezone.utc))
         time.sleep(wait_s)
@@ -1022,10 +1022,10 @@ def run_session_loop(strict_mode: bool = False) -> None:
 
 def run_daemon(strict_mode: bool = False) -> None:
     """Continuous 24/7 cloud daemon."""
-    print("Starting 24/7 Multi-Market London Retest Cloud Daemon...")
+    print("Starting 24/7 Multi-Market Retest Cloud Daemon...")
     while True:
         now_alg = datetime.datetime.now(ALGIERS_TZ)
-        if now_alg.weekday() < 5 and 8 <= now_alg.hour <= 13:
+        if now_alg.weekday() < 5 and 5 <= now_alg.hour <= 19:
             try:
                 _safe_evaluate(strict_mode=strict_mode, status_report=True)
             except Exception as exc:
@@ -1080,7 +1080,7 @@ def _render_dashboard_html(st: dict | None) -> str:
         "table{width:100%;border-collapse:collapse;margin:16px 0;}th,td{border:1px solid #2d3e58;padding:8px;text-align:left;font-size:14px;}"
         "th{background:#161d2b;color:#38bdf8;}a{color:#38bdf8;}</style></head><body>"
         "<h2>Multi-Market London Retest (XAUUSD, EURUSD, GBPUSD, US100, BTCUSD)</h2>"
-        "<p>FTM/FTMO $5K Rules | Manual Entry Only | 09:00-12:00 Algiers Time | $25 Risk / $50 Reward</p>"
+        "<p>FTM/FTMO $5K Rules | Manual Entry Only | 06:00-18:00 Algiers Time | $25 Risk / $50 Reward</p>"
         f"{body}"
         "<p><a href='/scan'>Trigger /scan</a> | <a href='/scan-sync'>Sync /scan-sync</a> | "
         "<a href='/test-telegram'>Send Telegram Briefing Test</a> | <a href='/health'>/health</a></p>"
