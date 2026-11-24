@@ -54,6 +54,7 @@ input int      InpTradeEndHour           = 12;       // London Window End Hour (
 
 input group "=== 3. STRATEGY PRESET & VOLATILITY SCALING ==="
 input bool     InpUse2026VolatilityScaling = true;   // True = Calibrated 2026 Preset ($8-$65 Tokyo 01-07, Structural SL)
+input bool     InpEnableGoldPsychLevels    = true;   // Enable Strategy #2: Gold $10 Psych-Level Retest (EMA20+EMA50, Split TP)
 input double   InpMinAsiaRangeDollars    = 4.00;     // Min Asia Range Width ($) [Strict Default: $4.00]
 input double   InpMaxAsiaRangeDollars    = 15.00;    // Max Asia Range Width ($) [Strict Default: $15.00]
 input int      InpEmaPeriod              = 50;       // Trend EMA Period
@@ -104,8 +105,9 @@ double ExtBreakoutBuffer[];
 double ExtRsiCalcBuffer[];
 
 //--- Indicator Handles
-int    g_emaHandle = INVALID_HANDLE;
-int    g_rsiHandle = INVALID_HANDLE;
+int    g_emaHandle   = INVALID_HANDLE;
+int    g_ema20Handle = INVALID_HANDLE;
+int    g_rsiHandle   = INVALID_HANDLE;
 
 //--- Prefix for Chart Objects
 string g_objPrefix = "GLR_";
@@ -823,12 +825,13 @@ int OnInit()
    IndicatorSetString(INDICATOR_SHORTNAME, "Gold London Retest (M15 Algiers GMT+1)");
    IndicatorSetInteger(INDICATOR_DIGITS, _Digits);
 
-   g_emaHandle = iMA(_Symbol, PERIOD_M15, InpEmaPeriod, 0, MODE_EMA, PRICE_CLOSE);
-   g_rsiHandle = iRSI(_Symbol, PERIOD_M15, InpRsiPeriod, PRICE_CLOSE);
+   g_emaHandle   = iMA(_Symbol, PERIOD_M15, InpEmaPeriod, 0, MODE_EMA, PRICE_CLOSE);
+   g_ema20Handle = iMA(_Symbol, PERIOD_M15, 20, 0, MODE_EMA, PRICE_CLOSE);
+   g_rsiHandle   = iRSI(_Symbol, PERIOD_M15, InpRsiPeriod, PRICE_CLOSE);
 
-   if(g_emaHandle == INVALID_HANDLE || g_rsiHandle == INVALID_HANDLE)
+   if(g_emaHandle == INVALID_HANDLE || g_ema20Handle == INVALID_HANDLE || g_rsiHandle == INVALID_HANDLE)
    {
-      Print("[GoldLondonRetest] Failed to create EMA50 or RSI14 indicator handle.");
+      Print("[GoldLondonRetest] Failed to create EMA50, EMA20, or RSI14 indicator handle.");
       return INIT_FAILED;
    }
 
@@ -844,10 +847,33 @@ int OnInit()
 void OnDeinit(const int reason)
 {
    if(g_emaHandle != INVALID_HANDLE) IndicatorRelease(g_emaHandle);
+   if(g_ema20Handle != INVALID_HANDLE) IndicatorRelease(g_ema20Handle);
    if(g_rsiHandle != INVALID_HANDLE) IndicatorRelease(g_rsiHandle);
 
    ObjectsDeleteAll(0, g_objPrefix);
    ChartRedraw(0);
+}
+
+//+------------------------------------------------------------------+
+//| Helper: Draw nearest $10 Psychological Levels on XAUUSD          |
+//+------------------------------------------------------------------+
+void DrawGoldPsychLevels(const double refPrice)
+{
+   double baseLvl = MathFloor(refPrice / 10.0) * 10.0;
+   for(int k = -1; k <= 2; k++)
+   {
+      double lvl = baseLvl + k * 10.0;
+      string name = g_objPrefix + "Psych_" + IntegerToString(k + 1);
+      if(ObjectFind(0, name) < 0)
+         ObjectCreate(0, name, OBJ_HLINE, 0, 0, lvl);
+      else
+         ObjectSetDouble(0, name, OBJPROP_PRICE, 0, lvl);
+      ObjectSetInteger(0, name, OBJPROP_COLOR, C'70,85,110');
+      ObjectSetInteger(0, name, OBJPROP_STYLE, STYLE_DOT);
+      ObjectSetInteger(0, name, OBJPROP_WIDTH, 1);
+      ObjectSetInteger(0, name, OBJPROP_BACK, true);
+      ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+   }
 }
 
 //+------------------------------------------------------------------+
@@ -1229,7 +1255,97 @@ int OnCalculate(const int rates_total,
             g_today.lastBlockReason = "Waiting for valid Break+Retest + EMA50 + RSI";
          }
       }
+
+      // Strategy #2: XAUUSD $10 Psychological Level Retest (With-Trend EMA20+EMA50 + Split TP1/TP2)
+      if(mp.label == "XAUUSD" && InpEnableGoldPsychLevels && inLondonWindow
+         && !g_today.stoppedByTwoLosses && !g_today.stoppedByProfitCap
+         && g_today.alertsToday < InpMaxAlertsPerDay && !newsBlocked
+         && curSpread <= mp.maxSpread && g_today.lastAlertedBarTime != time[lastClosed]
+         && lastClosed >= 2)
+      {
+         double ema20Arr[2];
+         if(CopyBuffer(g_ema20Handle, 0, 1, 1, ema20Arr) == 1)
+         {
+            double ema20Closed = ema20Arr[0];
+            double ema50Closed = ExtEmaBuffer[lastClosed];
+            double rsiClosed   = ExtRsiCalcBuffer[lastClosed];
+            double cRng        = high[lastClosed] - low[lastClosed];
+            double pRng        = high[lastClosed - 1] - low[lastClosed - 1];
+            double cBody       = MathAbs(close[lastClosed] - open[lastClosed]);
+            double lvlDown     = MathFloor(close[lastClosed] / 10.0) * 10.0;
+            double lvlUp       = lvlDown + 10.0;
+
+            int pDir = 0;
+            double lvlUsed = 0.0;
+            if(cRng > 0.0 && cRng <= 9.0 && pRng <= 9.0 && cBody >= 1.5 && (cBody / cRng) >= 0.35)
+            {
+               if(close[lastClosed] > ema20Closed && ema20Closed > ema50Closed
+                  && rsiClosed >= 50.0 && rsiClosed <= 65.0
+                  && close[lastClosed] > open[lastClosed]
+                  && close[lastClosed - 1] > lvlDown
+                  && low[lastClosed] <= lvlDown + 1.5 && low[lastClosed] >= lvlDown - 2.5
+                  && close[lastClosed] > lvlDown)
+               {
+                  pDir = 1; lvlUsed = lvlDown;
+               }
+               else if(close[lastClosed] < ema20Closed && ema20Closed < ema50Closed
+                  && rsiClosed >= 35.0 && rsiClosed <= 50.0
+                  && close[lastClosed] < open[lastClosed]
+                  && close[lastClosed - 1] < lvlUp
+                  && high[lastClosed] >= lvlUp - 1.5 && high[lastClosed] <= lvlUp + 2.5
+                  && close[lastClosed] < lvlUp)
+               {
+                  pDir = -1; lvlUsed = lvlUp;
+               }
+            }
+
+            if(pDir != 0)
+            {
+               double entry  = NormalizeDouble(close[lastClosed], _Digits);
+               double rawSL  = (pDir == 1)
+                               ? (entry - (MathMin(low[lastClosed], lvlUsed) - 1.0))
+                               : ((MathMax(high[lastClosed], lvlUsed) + 1.0) - entry);
+               double slDist = MathMax(3.0, MathMin(rawSL, 6.0));
+               double sl     = NormalizeDouble((pDir == 1) ? (entry - slDist) : (entry + slDist), _Digits);
+               double tp1    = NormalizeDouble((pDir == 1) ? (entry + slDist) : (entry - slDist), _Digits);
+               double tp2    = NormalizeDouble((pDir == 1) ? (entry + slDist * 2.0) : (entry - slDist * 2.0), _Digits);
+               double lot    = CalculateSafeLotSize(mp, slDist);
+               double risk   = NormalizeDouble(lot * 100.0 * slDist, 0);
+               string dirStr = (pDir == 1) ? "BUY" : "SELL";
+               string trTxt  = (pDir == 1) ? "Uptrend EMA20 > EMA50" : "Downtrend EMA20 < EMA50";
+               string hmStr  = StringFormat("%02d:%02d", barDt.hour, barDt.min);
+
+               string pMsg = StringFormat(
+                  "XAUUSD PSYCH-LEVEL SIGNAL - %s\n"
+                  "Level: %.2f ($10 Psychological Retest)\n"
+                  "Entry: %.2f\n"
+                  "Stop Loss: %.2f\n"
+                  "TP1 (70%% Close + Move SL to BE): %.2f (1:1)\n"
+                  "TP2 (30%% Runner): %.2f (1:2)\n"
+                  "Lot: %.2f (Max Risk: $%.0f)\n"
+                  "Reason: Retest of $10 Level %.0f, %s, RSI %.0f, No News.\n"
+                  "Time: %s Algiers Time\n"
+                  "Confirm in MT5 manually. Trade duration must be > 5 minutes.",
+                  dirStr, lvlUsed, entry, sl, tp1, tp2, lot, risk, lvlUsed, trTxt, rsiClosed, hmStr
+               );
+
+               if(pDir == 1) ExtBuyArrowBuffer[lastClosed] = low[lastClosed] - arrowPad;
+               else          ExtSellArrowBuffer[lastClosed] = high[lastClosed] + arrowPad;
+
+               SendTelegramMessage(pMsg);
+               if(InpEnablePopupAlerts) Alert(pMsg);
+               LogEventToCsv("PSYCH_SIGNAL", dirStr, entry, sl, tp2, lot, rsiClosed, ema50Closed, curSpread, trTxt);
+
+               g_today.alertsToday++;
+               g_today.lastAlertedBarTime = time[lastClosed];
+               g_today.lastBlockReason    = "Psych Signal sent: " + dirStr + " at " + hmStr;
+            }
+         }
+      }
    }
+
+   if(mp.label == "XAUUSD" && InpEnableGoldPsychLevels)
+      DrawGoldPsychLevels(close[liveBar]);
 
    UpdateDashboard(mp, nowAlgiers, ExtEmaBuffer[liveBar], ExtRsiCalcBuffer[liveBar], curSpread, prevSize, newsStr);
    return rates_total;

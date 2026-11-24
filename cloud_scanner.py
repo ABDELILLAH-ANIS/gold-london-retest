@@ -155,20 +155,25 @@ def load_telegram_credentials() -> tuple[str, str]:
 
 
 def compute_indicators(bars: list[dict]) -> list[dict]:
-    """Calculate EMA(50) and Wilder RSI(14) identically to MT5."""
+    """Calculate EMA(20), EMA(50), and Wilder RSI(14) identically to MT5."""
     if not bars:
         return bars
-    k_ema = 2.0 / 51.0
-    ema = bars[0]["c"]
+    k_ema20 = 2.0 / 21.0
+    k_ema50 = 2.0 / 51.0
+    ema20 = bars[0]["c"]
+    ema50 = bars[0]["c"]
     avg_g = 0.0
     avg_l = 0.0
-    bars[0]["ema50"] = round(ema, 6)
+    bars[0]["ema20"] = round(ema20, 6)
+    bars[0]["ema50"] = round(ema50, 6)
     bars[0]["rsi14"] = 50.0
 
     for i in range(1, len(bars)):
         c = bars[i]["c"]
-        ema = c * k_ema + ema * (1.0 - k_ema)
-        bars[i]["ema50"] = round(ema, 6)
+        ema20 = c * k_ema20 + ema20 * (1.0 - k_ema20)
+        ema50 = c * k_ema50 + ema50 * (1.0 - k_ema50)
+        bars[i]["ema20"] = round(ema20, 6)
+        bars[i]["ema50"] = round(ema50, 6)
         ch = c - bars[i - 1]["c"]
         g = max(ch, 0.0)
         l = max(-ch, 0.0)
@@ -374,6 +379,7 @@ def load_state(today_key: str) -> dict:
         "sent_morning_brief": False,
         "sent_no_setup_msg": False,
         "last_alert_bar_by_sym": {},
+        "used_psych_levels": [],
     }
     if os.path.exists(STATE_PATH):
         try:
@@ -652,16 +658,227 @@ def evaluate_market(
     }
 
 
+def evaluate_xau_psych_strategy(
+    bars: list[dict],
+    data_src: str,
+    now_alg: datetime.datetime,
+    state: dict,
+    news_blocked: bool,
+    news_msg: str,
+    bot_token: str,
+    chat_id: str,
+    dry_run: bool,
+) -> dict:
+    """Strategy #2: XAUUSD $10 Psychological Level Retest (With-Trend EMA20/EMA50 + Split TP1/TP2)."""
+    today_date = now_alg.date()
+    closed_idx = len(bars) - 2
+    closed_bar = bars[closed_idx]
+    prev_bar = bars[closed_idx - 1]
+
+    # Resolve active XAUUSD_PSYCH signals (70% TP1 at 1:1 -> BE, 30% Runner at 1:2)
+    for sig in state["active_signals"]:
+        if sig["symbol"] != "XAUUSD_PSYCH" or sig.get("resolved"):
+            continue
+        if sig["dir"] == "BUY":
+            if not sig.get("hit_tp1"):
+                if closed_bar["l"] <= sig["sl"]:
+                    sig["resolved"] = True
+                    state["losses_today"] += 1
+                    state["realized_pnl"] -= 25.0
+                    state["lost_keys"].append("XAUUSD_PSYCH_BUY")
+                elif closed_bar["h"] >= sig["tp"]:
+                    sig["resolved"] = True
+                    state["realized_pnl"] += 32.5
+                elif closed_bar["h"] >= sig["tp1"]:
+                    sig["hit_tp1"] = True
+            else:
+                if closed_bar["l"] <= sig["entry"]:
+                    sig["resolved"] = True
+                    state["realized_pnl"] += 17.5
+                elif closed_bar["h"] >= sig["tp"]:
+                    sig["resolved"] = True
+                    state["realized_pnl"] += 32.5
+        elif sig["dir"] == "SELL":
+            if not sig.get("hit_tp1"):
+                if closed_bar["h"] >= sig["sl"]:
+                    sig["resolved"] = True
+                    state["losses_today"] += 1
+                    state["realized_pnl"] -= 25.0
+                    state["lost_keys"].append("XAUUSD_PSYCH_SELL")
+                elif closed_bar["l"] <= sig["tp"]:
+                    sig["resolved"] = True
+                    state["realized_pnl"] += 32.5
+                elif closed_bar["l"] <= sig["tp1"]:
+                    sig["hit_tp1"] = True
+            else:
+                if closed_bar["h"] >= sig["entry"]:
+                    sig["resolved"] = True
+                    state["realized_pnl"] += 17.5
+                elif closed_bar["l"] <= sig["tp"]:
+                    sig["resolved"] = True
+                    state["realized_pnl"] += 32.5
+
+    day_bars = [b for b in bars[:-1] if b["dt"].date() == today_date]
+    day_open = day_bars[0]["o"] if day_bars else closed_bar["o"]
+    lvl_down = float(int(closed_bar["c"] // 10.0) * 10)
+    lvl_up = lvl_down + 10.0
+
+    bar_alg = closed_bar["dt"]
+    in_window = (
+        bar_alg.date() == today_date
+        and bar_alg.weekday() < 5
+        and 9 <= bar_alg.hour < 12
+        and (now_alg - bar_alg).total_seconds() <= 2700
+    )
+
+    action_note = "Outside 09:00-12:00 Algiers window"
+    if in_window:
+        if state["stopped_two_losses"] or state["losses_today"] >= 2:
+            action_note = "Stopped: 2 losses reached"
+        elif state["stopped_profit_cap"] or state["realized_pnl"] >= 80.0:
+            action_note = "Stopped: +$80 daily cap hit"
+        elif state["alerts_today"] >= 2:
+            action_note = "Max 2 alerts reached today"
+        elif news_blocked:
+            action_note = f"Blocked by {news_msg}"
+        elif state["last_alert_bar_by_sym"].get("XAUUSD_PSYCH") == closed_bar["ts"]:
+            action_note = "Bar already alerted"
+        elif abs(closed_bar["c"] - day_open) > 40.0:
+            action_note = f"Move exhausted ({abs(closed_bar['c'] - day_open):.1f} > $40 from open)"
+        else:
+            prev_size = prev_bar["h"] - prev_bar["l"]
+            cur_range = closed_bar["h"] - closed_bar["l"]
+            cur_body = abs(closed_bar["c"] - closed_bar["o"])
+            sig_dir, lvl_used = None, None
+            used_levels = set(state.get("used_psych_levels", []))
+
+            if (
+                prev_size <= 9.0
+                and 0 < cur_range <= 9.0
+                and cur_body >= 1.5
+                and (cur_body / cur_range) >= 0.35
+            ):
+                if (
+                    closed_bar["c"] > closed_bar["ema20"] > closed_bar["ema50"]
+                    and 50.0 <= closed_bar["rsi14"] <= 65.0
+                    and closed_bar["c"] > closed_bar["o"]
+                    and prev_bar["c"] > lvl_down
+                    and (lvl_down - 2.5 <= closed_bar["l"] <= lvl_down + 1.5)
+                    and closed_bar["c"] > lvl_down
+                    and lvl_down not in used_levels
+                ):
+                    sig_dir, lvl_used = "BUY", lvl_down
+                elif (
+                    closed_bar["c"] < closed_bar["ema20"] < closed_bar["ema50"]
+                    and 35.0 <= closed_bar["rsi14"] <= 50.0
+                    and closed_bar["c"] < closed_bar["o"]
+                    and prev_bar["c"] < lvl_up
+                    and (lvl_up - 1.5 <= closed_bar["h"] <= lvl_up + 2.5)
+                    and closed_bar["c"] < lvl_up
+                    and lvl_up not in used_levels
+                ):
+                    sig_dir, lvl_used = "SELL", lvl_up
+
+            if sig_dir and lvl_used is not None:
+                entry = round(closed_bar["c"], 2)
+                raw_sl = (
+                    (entry - (min(closed_bar["l"], lvl_used) - 1.0))
+                    if sig_dir == "BUY"
+                    else ((max(closed_bar["h"], lvl_used) + 1.0) - entry)
+                )
+                sl_dist = max(3.0, min(raw_sl, 6.0))
+                sl = round(entry - sl_dist if sig_dir == "BUY" else entry + sl_dist, 2)
+                tp1 = round(entry + sl_dist if sig_dir == "BUY" else entry - sl_dist, 2)
+                tp2 = round(entry + sl_dist * 2.0 if sig_dir == "BUY" else entry - sl_dist * 2.0, 2)
+                lot = calculate_lot_for_25_risk("XAUUSD", sl_dist)
+                risk = round(lot * 100.0 * sl_dist)
+                trend_txt = "Uptrend EMA20 > EMA50" if sig_dir == "BUY" else "Downtrend EMA20 < EMA50"
+
+                tg_msg = (
+                    f"XAUUSD PSYCH-LEVEL SIGNAL - {sig_dir}\n"
+                    f"Level: {lvl_used:.2f} ($10 Psychological Retest)\n"
+                    f"Entry: {entry:.2f}\n"
+                    f"Stop Loss: {sl:.2f}\n"
+                    f"TP1 (70% Close + Move SL to BE): {tp1:.2f} (1:1)\n"
+                    f"TP2 (30% Runner): {tp2:.2f} (1:2)\n"
+                    f"Lot: {lot:.2f} (Max Risk: ${risk})\n"
+                    f"Reason: Retest of $10 Level {lvl_used:.0f}, {trend_txt}, RSI {closed_bar['rsi14']:.0f}, No News.\n"
+                    f"Time: {bar_alg.strftime('%H:%M')} Algiers Time\n"
+                    "Confirm in MT5 manually. Trade duration must be > 5 minutes."
+                )
+
+                if not dry_run and bot_token and chat_id:
+                    _, info = send_telegram_text(bot_token, chat_id, tg_msg)
+                    action_note = f"Psych {sig_dir} @ {lvl_used:.0f} sent -> {info}"
+                else:
+                    action_note = f"Psych {sig_dir} @ {lvl_used:.0f} generated (dry_run={dry_run})"
+
+                log_cloud_signal_to_db(
+                    {
+                        "symbol": "XAUUSD_PSYCH",
+                        "ts": closed_bar["ts"],
+                        "dir": sig_dir,
+                        "entry": entry,
+                        "sl": sl,
+                        "tp": tp2,
+                        "lot": lot,
+                        "ema50": round(closed_bar["ema50"], 2),
+                        "rsi14": closed_bar["rsi14"],
+                        "asia_high": lvl_up,
+                        "asia_low": lvl_down,
+                        "prev_size": round(prev_size, 2),
+                    },
+                    tg_msg,
+                )
+
+                if not dry_run:
+                    state["alerts_today"] += 1
+                    state["last_alert_bar_by_sym"]["XAUUSD_PSYCH"] = closed_bar["ts"]
+                    state["used_psych_levels"].append(lvl_used)
+                    state["active_signals"].append(
+                        {
+                            "symbol": "XAUUSD_PSYCH",
+                            "dir": sig_dir,
+                            "entry": entry,
+                            "sl": sl,
+                            "tp1": tp1,
+                            "tp": tp2,
+                            "hit_tp1": False,
+                            "resolved": False,
+                        }
+                    )
+            else:
+                action_note = f"Watching $10 levels {lvl_down:.0f} / {lvl_up:.0f} (EMA20 {closed_bar['ema20']:.2f})"
+
+    return {
+        "symbol": "XAUUSD_PSYCH",
+        "data_source": data_src,
+        "closed_bar_ts": closed_bar["ts"],
+        "close_price": round(closed_bar["c"], 2),
+        "ema50": round(closed_bar["ema50"], 2),
+        "rsi14": closed_bar["rsi14"],
+        "asia_high": lvl_up,
+        "asia_low": lvl_down,
+        "asia_width": 10.0,
+        "asia_valid": abs(closed_bar["c"] - day_open) <= 40.0,
+        "action_note": action_note,
+    }
+
+
 def _format_briefing_message(now_alg: datetime.datetime, markets_res: dict, news_msg: str) -> str:
     lines = [
         f"LONDON SESSION BRIEFING ({now_alg.strftime('%Y-%m-%d %H:%M')} Algiers)",
-        "Scanning 5 Markets | Risk: $25 | Max 2 Alerts/Day",
+        "Scanning 5 Markets + Gold $10 Psych Levels | Risk: $25 | Max 2 Alerts/Day",
         f"News Status: {news_msg}",
         "",
     ]
     for sym, m in markets_res.items():
         if m.get("error"):
             lines.append(f"• {sym}: Feed error")
+        elif sym == "XAUUSD_PSYCH":
+            lines.append(
+                f"• XAUUSD_PSYCH: Price {m['close_price']} | $10 Levels {m['asia_low']:.0f}/{m['asia_high']:.0f} | RSI {m['rsi14']}"
+            )
         else:
             tag = "VALID" if m["asia_valid"] else "SKIP"
             lines.append(
@@ -677,7 +894,7 @@ def evaluate_once(
     status_report: bool = False,
     send_brief_now: bool = False,
 ) -> dict:
-    """Evaluate all 5 markets on their latest closed M15 candle and send Telegram alerts."""
+    """Evaluate all 5 markets + XAUUSD $10 Psych Level strategy on latest closed M15 candle."""
     now_alg = datetime.datetime.now(ALGIERS_TZ)
     today_key = now_alg.date().isoformat()
     state = load_state(today_key)
@@ -693,6 +910,15 @@ def evaluate_once(
             )
         except Exception as exc:
             markets_res[sym] = {"symbol": sym, "error": str(exc), "asia_valid": False}
+
+    # Strategy #2: XAUUSD $10 Psychological Level Retest (With-Trend EMA20/EMA50 + Split TP)
+    try:
+        xau_bars, xau_src = fetch_market_bars("XAUUSD")
+        markets_res["XAUUSD_PSYCH"] = evaluate_xau_psych_strategy(
+            xau_bars, xau_src, now_alg, state, news_blocked, news_msg, bot_token, chat_id, dry_run
+        )
+    except Exception as exc:
+        markets_res["XAUUSD_PSYCH"] = {"symbol": "XAUUSD_PSYCH", "error": str(exc), "asia_valid": False}
 
     if state["losses_today"] >= 2 or state["realized_pnl"] <= -50.0:
         state["stopped_two_losses"] = True
