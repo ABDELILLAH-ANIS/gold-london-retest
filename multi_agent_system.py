@@ -145,6 +145,17 @@ def enrich_full_indicators(bars: list[dict]) -> list[dict]:
         vwap_cnt += 1
         vwap = vwap_sum / vwap_cnt
 
+        # Stochastic (14, 3) & Keltner Channel (EMA20 +/- 1.5*ATR14)
+        st_win = bars[max(0, i - 13) : i + 1]
+        hh14 = max(x["h"] for x in st_win)
+        ll14 = min(x["l"] for x in st_win)
+        stoch_k = (100.0 * (c - ll14) / (hh14 - ll14)) if hh14 > ll14 else 50.0
+        b["stoch_k"] = round(stoch_k, 1)
+        prev_ks = [bars[j].get("stoch_k", 50.0) for j in range(max(0, i - 2), i)] + [stoch_k]
+        b["stoch_d"] = round(sum(prev_ks) / len(prev_ks), 1)
+
+        b["kc_up"] = ema20[i] + 1.5 * atr14[i]
+        b["kc_dn"] = ema20[i] - 1.5 * atr14[i]
         b["ema9"] = ema9[i]
         b["ema20"] = ema20[i]
         b["ema21"] = ema21[i]
@@ -167,7 +178,7 @@ def enrich_full_indicators(bars: list[dict]) -> list[dict]:
 
 
 class MarketSpecialistAgent:
-    """Dedicated specialist agent for one market running 12 famous strategies."""
+    """Dedicated specialist agent for one market running 15 strategies (12 core + 3 market-exclusive)."""
 
     PSYCH_STEPS = {
         "XAUUSD": 10.0,
@@ -183,6 +194,14 @@ class MarketSpecialistAgent:
         "3_EMA20_50_Pullback",
         "10_SMC_BOS_FVG",
         "11_PriceAction_Engulf_Pinbar",
+        "13_Gold_Liquidity_Sweep",
+        "15_Gold_OrderBlock_Retest",
+        "13_FX_London_Box_Break",
+        "14_Donchian20_Breakout",
+        "13_GBP_Judas_Sweep",
+        "13_US100_NY_ORB_1530",
+        "13_BTC_Volatility_Squeeze",
+        "15_BTC_Liquidity_Sweep",
     }
 
     def __init__(self, symbol: str, spec: dict):
@@ -337,6 +356,138 @@ class MarketSpecialistAgent:
                 s12 = "SELL"
         votes["12_ADX_Trend_Strength"] = s12
 
+        # --- Market-Exclusive Specialist Strategies (#13, #14, #15) ---
+        swing12_hi = max(x["h"] for x in bars[max(0, idx - 12) : idx])
+        swing12_lo = min(x["l"] for x in bars[max(0, idx - 12) : idx])
+        donch20_hi = max(x["h"] for x in bars[max(0, idx - 20) : idx])
+        donch20_lo = min(x["l"] for x in bars[max(0, idx - 20) : idx])
+        in_squeeze = (prev["bb_up"] < prev["kc_up"]) and (prev["bb_dn"] > prev["kc_dn"])
+
+        if self.symbol == "XAUUSD":
+            # #13 Gold Liquidity Sweep (Stop-Hunt / Turtle Soup)
+            s13 = "NONE"
+            if b["l"] < swing12_lo and b["c"] > swing12_lo and bull:
+                s13 = "BUY"
+            elif b["h"] > swing12_hi and b["c"] < swing12_hi and bear:
+                s13 = "SELL"
+            votes["13_Gold_Liquidity_Sweep"] = s13
+
+            # #14 Gold London Killzone Momentum (08:00-11:00 Algiers)
+            s14 = "NONE"
+            if 8 <= b["dt"].hour < 11 and b["atr14"] >= prev["atr14"]:
+                if b["c"] > b["ema20"] > b["ema50"] and bull:
+                    s14 = "BUY"
+                elif b["c"] < b["ema20"] < b["ema50"] and bear:
+                    s14 = "SELL"
+            votes["14_Gold_London_Killzone"] = s14
+
+            # #15 Gold Institutional Order Block Retest
+            s15 = "NONE"
+            for k in range(max(2, idx - 8), idx - 1):
+                ob = bars[k]
+                disp = bars[k + 1]
+                if ob["c"] < ob["o"] and (disp["c"] - disp["o"]) >= b["atr14"] * 1.2:
+                    if bull and ob["l"] <= b["l"] <= ob["h"] and b["c"] > ob["h"]:
+                        s15 = "BUY"
+                        break
+                elif ob["c"] > ob["o"] and (disp["o"] - disp["c"]) >= b["atr14"] * 1.2:
+                    if bear and ob["l"] <= b["h"] <= ob["h"] and b["c"] < ob["l"]:
+                        s15 = "SELL"
+                        break
+            votes["15_Gold_OrderBlock_Retest"] = s15
+
+        elif self.symbol in ("EURUSD", "GBPUSD"):
+            # #13 Pre-London Box Break (EURUSD) / ICT Judas Sweep (GBPUSD)
+            if self.symbol == "EURUSD":
+                pre_lon = [x for x in bars[:idx] if x["dt"].date() == today_date and 7 <= x["dt"].hour < 9]
+                s13 = "NONE"
+                if len(pre_lon) >= 4 and b["dt"].hour >= 9:
+                    pl_h = max(x["h"] for x in pre_lon)
+                    pl_l = min(x["l"] for x in pre_lon)
+                    if b["c"] > pl_h and bull:
+                        s13 = "BUY"
+                    elif b["c"] < pl_l and bear:
+                        s13 = "SELL"
+                votes["13_FX_London_Box_Break"] = s13
+            else:
+                s13 = "NONE"
+                if asia_valid and b["dt"].hour >= 8:
+                    if b["l"] < asia_l and b["c"] > asia_l and bull:
+                        s13 = "BUY"
+                    elif b["h"] > asia_h and b["c"] < asia_h and bear:
+                        s13 = "SELL"
+                votes["13_GBP_Judas_Sweep"] = s13
+
+            # #14 Donchian 20-Bar Trend Breakout
+            s14 = "NONE"
+            if b["c"] > donch20_hi and bull:
+                s14 = "BUY"
+            elif b["c"] < donch20_lo and bear:
+                s14 = "SELL"
+            votes["14_Donchian20_Breakout"] = s14
+
+            # #15 Stochastic (14,3,3) Pullback Cross With EMA50 Trend
+            s15 = "NONE"
+            if b["c"] > b["ema50"] and b["stoch_k"] > b["stoch_d"] and prev["stoch_k"] <= prev["stoch_d"] and b["stoch_k"] < 55:
+                s15 = "BUY"
+            elif b["c"] < b["ema50"] and b["stoch_k"] < b["stoch_d"] and prev["stoch_k"] >= prev["stoch_d"] and b["stoch_k"] > 45:
+                s15 = "SELL"
+            votes["15_FX_Stochastic_Pullback"] = s15
+
+        elif self.symbol == "US100":
+            # #13 New York Opening Range Breakout (15:30-15:45 Algiers ORB)
+            orb_bars = [x for x in bars[:idx] if x["dt"].date() == today_date and x["dt"].hour == 15 and x["dt"].minute == 30]
+            s13 = "NONE"
+            if orb_bars and (15 <= b["dt"].hour < 18):
+                orb_h, orb_l = orb_bars[0]["h"], orb_bars[0]["l"]
+                if b["c"] > orb_h and bull:
+                    s13 = "BUY"
+                elif b["c"] < orb_l and bear:
+                    s13 = "SELL"
+            votes["13_US100_NY_ORB_1530"] = s13
+
+            # #14 Donchian 20-Bar Breakout
+            s14 = "NONE"
+            if b["c"] > donch20_hi and bull:
+                s14 = "BUY"
+            elif b["c"] < donch20_lo and bear:
+                s14 = "SELL"
+            votes["14_Donchian20_Breakout"] = s14
+
+            # #15 Keltner/Bollinger Squeeze Fire
+            s15 = "NONE"
+            if in_squeeze and b["c"] > b["bb_mid"] and bull:
+                s15 = "BUY"
+            elif in_squeeze and b["c"] < b["bb_mid"] and bear:
+                s15 = "SELL"
+            votes["15_US100_Keltner_Squeeze"] = s15
+
+        else:  # BTCUSD
+            # #13 Volatility Squeeze Breakout (TTM Squeeze style)
+            s13 = "NONE"
+            if in_squeeze and b["c"] > b["ema50"] and bull:
+                s13 = "BUY"
+            elif in_squeeze and b["c"] < b["ema50"] and bear:
+                s13 = "SELL"
+            votes["13_BTC_Volatility_Squeeze"] = s13
+
+            # #14 Donchian 20-Bar Crypto Breakout
+            s14 = "NONE"
+            if b["c"] > donch20_hi and bull:
+                s14 = "BUY"
+            elif b["c"] < donch20_lo and bear:
+                s14 = "SELL"
+            votes["14_Donchian20_Breakout"] = s14
+
+            # #15 BTC 12-Bar Liquidity Sweep Reclaim
+            s15 = "NONE"
+            if b["l"] < swing12_lo and b["c"] > swing12_lo and bull:
+                s15 = "BUY"
+            elif b["h"] > swing12_hi and b["c"] < swing12_hi and bear:
+                s15 = "SELL"
+            votes["15_BTC_Liquidity_Sweep"] = s15
+
+        total_strats = len(votes)
         buy_strats = [k for k, v in votes.items() if v == "BUY"]
         sell_strats = [k for k, v in votes.items() if v == "SELL"]
         buy_n, sell_n = len(buy_strats), len(sell_strats)
@@ -352,7 +503,7 @@ class MarketSpecialistAgent:
             agreed, opposed = sell_strats, buy_strats
 
         has_structural = any(s in self.STRUCTURAL_STRATEGIES for s in agreed)
-        confidence = round(100.0 * len(agreed) / 12.0, 1) if proposed_dir != "NONE" else 0.0
+        confidence = round(100.0 * len(agreed) / float(total_strats), 1) if proposed_dir != "NONE" else 0.0
 
         # Compute structural SL & TP1 (1:1) / TP2 (1:2)
         entry = round(b["c"], digits)
@@ -408,7 +559,7 @@ class MarketSpecialistAgent:
 class ManagerAgent:
     """Chief Risk & Trade Approval Agent coordinating all 5 Specialist Market Agents."""
 
-    MIN_AGREE_STRATEGIES = 7      # Requires >= 7/12 strategies agreeing (58%+ consensus)
+    MIN_AGREE_STRATEGIES = 8      # Requires >= 8/15 strategies agreeing (53%+ consensus)
     MIN_MARGIN_OVER_OPPOSE = 5    # Must beat opposite votes by at least 5 strategies
 
     def __init__(self, market_specs: dict, fetch_fn, lot_fn):
@@ -490,13 +641,13 @@ class ManagerAgent:
                 prop["manager_decision"] = "SKIP: Bar already alerted"
                 continue
             if prop["proposed_dir"] == "NONE":
-                prop["manager_decision"] = f"NO SIGNAL (BUY:{prop['buy_votes']}/12 | SELL:{prop['sell_votes']}/12)"
+                prop["manager_decision"] = f"NO SIGNAL (BUY:{prop['buy_votes']}/15 | SELL:{prop['sell_votes']}/15)"
                 continue
 
             agree_n = len(prop["agreed_strategies"])
             oppose_n = len(prop["opposed_strategies"])
             if agree_n < self.MIN_AGREE_STRATEGIES or (agree_n - oppose_n) < self.MIN_MARGIN_OVER_OPPOSE:
-                prop["manager_decision"] = f"REJECTED: Weak consensus ({agree_n}/12 vs {oppose_n}/12 oppose)"
+                prop["manager_decision"] = f"REJECTED: Weak consensus ({agree_n}/15 vs {oppose_n}/15 oppose)"
                 continue
             if not prop["has_structural_trigger"]:
                 prop["manager_decision"] = "REJECTED: No structural price-action/retest trigger"
@@ -528,8 +679,8 @@ class ManagerAgent:
 
             tg_msg = (
                 f"[MANAGER APPROVED] {sym} - {prop['proposed_dir']}\n"
-                f"Agent: {prop['agent']} -> ManagerAgent ({agree_n}/12 Strategies | {prop['confidence_pct']:.0f}%)\n"
-                f"Agreed: {', '.join(clean_names[:6])}\n"
+                f"Agent: {prop['agent']} -> ManagerAgent ({agree_n}/15 Strategies | {prop['confidence_pct']:.0f}%)\n"
+                f"Agreed: {', '.join(clean_names[:7])}\n"
                 f"Entry: {prop['entry']:.{digits}f}\n"
                 f"Stop Loss: {prop['sl']:.{digits}f}\n"
                 f"TP1 (50% + Move SL to BE): {prop['tp1']:.{digits}f} (1:1)\n"
@@ -544,7 +695,7 @@ class ManagerAgent:
             prop["risk_usd"] = risk
             prop["reward_usd"] = reward
             prop["telegram_message"] = tg_msg
-            prop["manager_decision"] = f"APPROVED ({agree_n}/12 -> {prop['proposed_dir']})"
+            prop["manager_decision"] = f"APPROVED ({agree_n}/15 -> {prop['proposed_dir']})"
             approved.append(prop)
 
         return approved

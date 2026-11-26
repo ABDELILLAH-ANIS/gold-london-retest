@@ -869,7 +869,7 @@ def evaluate_xau_psych_strategy(
 def _format_briefing_message(now_alg: datetime.datetime, agents_res: dict, news_msg: str) -> str:
     lines = [
         f"MULTI-AGENT TRADING BRIEFING ({now_alg.strftime('%Y-%m-%d %H:%M')} Algiers)",
-        "5 Market Agents x 12 Strategies -> ManagerAgent | 06:00-18:00",
+        "5 Market Agents x 15 Strategies -> ManagerAgent | 06:00-18:00",
         f"Risk: $25/trade | Max 2/Day | News: {news_msg}",
         "",
     ]
@@ -878,7 +878,7 @@ def _format_briefing_message(now_alg: datetime.datetime, agents_res: dict, news_
             lines.append(f"• {a['agent']}: Feed error")
         else:
             lines.append(
-                f"• {a['agent']}: {a['close_price']} | BUY {a['buy_votes']}/12 SELL {a['sell_votes']}/12 | "
+                f"• {a['agent']}: {a['close_price']} | BUY {a['buy_votes']}/15 SELL {a['sell_votes']}/15 | "
                 f"ADX {a['adx']} | {a.get('manager_decision', 'WAIT')}"
             )
     lines.append("\nManual entry only. Trade duration must be > 5 minutes.")
@@ -1041,7 +1041,7 @@ def evaluate_once(
     gold = clean_agents.get("XAUUSD", {})
     summary = {
         "now_algiers": now_alg.strftime("%Y-%m-%d %H:%M:%S"),
-        "architecture": "5 Specialist Market Agents (12 Strategies each) -> 1 ManagerAgent",
+        "architecture": "5 Specialist Market Agents (15 Strategies each) -> 1 ManagerAgent",
         "window_algiers": "06:00-18:00",
         "news_blocked": news_blocked,
         "news_status": news_msg,
@@ -1144,7 +1144,7 @@ def _render_dashboard_html(st: dict | None) -> str:
                 agreed_txt = ", ".join(s.split("_", 1)[1] for s in a.get("agreed_strategies", [])[:4]) or "-"
                 rows_html.append(
                     f"<tr><td><b>{a['agent']}</b></td><td>{a['close_price']}</td>"
-                    f"<td>BUY {a['buy_votes']}/12 | SELL {a['sell_votes']}/12</td>"
+                    f"<td>BUY {a['buy_votes']}/15 | SELL {a['sell_votes']}/15</td>"
                     f"<td>{a['rsi14']}</td><td>{a['adx']}</td><td>{agreed_txt}</td>"
                     f"<td><b>{a.get('manager_decision', 'WAIT')}</b></td></tr>"
                 )
@@ -1153,7 +1153,7 @@ def _render_dashboard_html(st: dict | None) -> str:
             f"<b>News:</b> {st['news_status']} | "
             f"<b>Alerts:</b> {st['alerts_today']}/2 | <b>Losses:</b> {st['losses_today']}/2 | "
             f"<b>PnL:</b> ${st['realized_pnl']:.2f}</p>"
-            f"<table><tr><th>Specialist Agent</th><th>Price</th><th>12-Strategy Vote</th><th>RSI14</th><th>ADX</th><th>Top Agreed</th><th>ManagerAgent Decision</th></tr>"
+            f"<table><tr><th>Specialist Agent</th><th>Price</th><th>15-Strategy Vote</th><th>RSI14</th><th>ADX</th><th>Top Agreed</th><th>ManagerAgent Decision</th></tr>"
             f"{''.join(rows_html)}</table>"
         )
     return (
@@ -1162,8 +1162,8 @@ def _render_dashboard_html(st: dict | None) -> str:
         "<style>body{font-family:system-ui,sans-serif;background:#0e121a;color:#e5e7eb;padding:24px;max-width:1100px;margin:auto;}"
         "table{width:100%;border-collapse:collapse;margin:16px 0;}th,td{border:1px solid #2d3e58;padding:8px;text-align:left;font-size:13px;}"
         "th{background:#161d2b;color:#38bdf8;}a{color:#38bdf8;}</style></head><body>"
-        "<h2>Multi-Agent Trading Desk: 5 Market Agents (12 Strategies Each) -> ManagerAgent</h2>"
-        "<p>FTM/FTMO $5K Rules | Manual Entry Only | 06:00-18:00 Algiers Time | Min 7/12 Consensus | $25 Risk / $50 Reward</p>"
+        "<h2>Multi-Agent Trading Desk: 5 Market Agents (15 Strategies Each) -> ManagerAgent</h2>"
+        "<p>FTM/FTMO $5K Rules | Manual Entry Only | 06:00-18:00 Algiers Time | Min 8/15 Consensus | $25 Risk / $50 Reward</p>"
         f"{body}"
         "<p><a href='/scan'>Trigger /scan</a> | <a href='/scan-sync'>Sync /scan-sync</a> | "
         "<a href='/test-telegram'>Send Telegram Briefing</a> | <a href='/health'>/health</a></p>"
