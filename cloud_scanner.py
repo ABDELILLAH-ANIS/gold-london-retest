@@ -19,6 +19,7 @@ import urllib.error
 import urllib.request
 
 from gold_london_retest_db import DB_PATH, get_connection, init_db, send_telegram_text
+from multi_agent_system import ManagerAgent
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATE_PATH = os.path.join(BASE_DIR, "cloud_state.json")
@@ -865,27 +866,70 @@ def evaluate_xau_psych_strategy(
     }
 
 
-def _format_briefing_message(now_alg: datetime.datetime, markets_res: dict, news_msg: str) -> str:
+def _format_briefing_message(now_alg: datetime.datetime, agents_res: dict, news_msg: str) -> str:
     lines = [
-        f"LONDON SESSION BRIEFING ({now_alg.strftime('%Y-%m-%d %H:%M')} Algiers)",
-        "Scanning 5 Markets + Gold $10 Psych Levels | Risk: $25 | Max 2 Alerts/Day",
-        f"News Status: {news_msg}",
+        f"MULTI-AGENT TRADING BRIEFING ({now_alg.strftime('%Y-%m-%d %H:%M')} Algiers)",
+        "5 Market Agents x 12 Strategies -> ManagerAgent | 06:00-18:00",
+        f"Risk: $25/trade | Max 2/Day | News: {news_msg}",
         "",
     ]
-    for sym, m in markets_res.items():
-        if m.get("error"):
-            lines.append(f"• {sym}: Feed error")
-        elif sym == "XAUUSD_PSYCH":
-            lines.append(
-                f"• XAUUSD_PSYCH: Price {m['close_price']} | $10 Levels {m['asia_low']:.0f}/{m['asia_high']:.0f} | RSI {m['rsi14']}"
-            )
+    for sym, a in agents_res.items():
+        if a.get("error"):
+            lines.append(f"• {a['agent']}: Feed error")
         else:
-            tag = "VALID" if m["asia_valid"] else "SKIP"
             lines.append(
-                f"• {sym}: Price {m['close_price']} | Asia {m['asia_low']}-{m['asia_high']} [{tag}] | RSI {m['rsi14']}"
+                f"• {a['agent']}: {a['close_price']} | BUY {a['buy_votes']}/12 SELL {a['sell_votes']}/12 | "
+                f"ADX {a['adx']} | {a.get('manager_decision', 'WAIT')}"
             )
     lines.append("\nManual entry only. Trade duration must be > 5 minutes.")
     return "\n".join(lines)
+
+
+def _resolve_active_signals(proposals: dict[str, dict], state: dict) -> None:
+    """Track open approved signals against latest price to enforce -$50 daily stop and +$80 cap."""
+    for sig in state.get("active_signals", []):
+        if sig.get("resolved"):
+            continue
+        prop = proposals.get(sig["symbol"])
+        if not prop or prop.get("error"):
+            continue
+        p = prop["close_price"]
+        if sig["dir"] == "BUY":
+            if not sig.get("hit_tp1"):
+                if p <= sig["sl"]:
+                    sig["resolved"] = True
+                    state["losses_today"] += 1
+                    state["realized_pnl"] -= 25.0
+                elif p >= sig["tp"]:
+                    sig["resolved"] = True
+                    state["realized_pnl"] += 37.5
+                elif p >= sig.get("tp1", sig["tp"]):
+                    sig["hit_tp1"] = True
+            else:
+                if p <= sig["entry"]:
+                    sig["resolved"] = True
+                    state["realized_pnl"] += 12.5
+                elif p >= sig["tp"]:
+                    sig["resolved"] = True
+                    state["realized_pnl"] += 37.5
+        elif sig["dir"] == "SELL":
+            if not sig.get("hit_tp1"):
+                if p >= sig["sl"]:
+                    sig["resolved"] = True
+                    state["losses_today"] += 1
+                    state["realized_pnl"] -= 25.0
+                elif p <= sig["tp"]:
+                    sig["resolved"] = True
+                    state["realized_pnl"] += 37.5
+                elif p <= sig.get("tp1", sig["tp"]):
+                    sig["hit_tp1"] = True
+            else:
+                if p >= sig["entry"]:
+                    sig["resolved"] = True
+                    state["realized_pnl"] += 12.5
+                elif p <= sig["tp"]:
+                    sig["resolved"] = True
+                    state["realized_pnl"] += 37.5
 
 
 def evaluate_once(
@@ -894,7 +938,7 @@ def evaluate_once(
     status_report: bool = False,
     send_brief_now: bool = False,
 ) -> dict:
-    """Evaluate all 5 markets + XAUUSD $10 Psych Level strategy on latest closed M15 candle."""
+    """Run all 5 Specialist Market Agents (12 strategies each) -> ManagerAgent Audit -> Telegram."""
     now_alg = datetime.datetime.now(ALGIERS_TZ)
     today_key = now_alg.date().isoformat()
     state = load_state(today_key)
@@ -902,42 +946,77 @@ def evaluate_once(
     news_blocked, news_msg = check_usd_high_impact_news(now_alg)
     bot_token, chat_id = load_telegram_credentials()
 
-    markets_res: dict[str, dict] = {}
-    for sym in MARKET_SPECS:
-        try:
-            markets_res[sym] = evaluate_market(
-                sym, now_alg, state, news_blocked, news_msg, bot_token, chat_id, dry_run
-            )
-        except Exception as exc:
-            markets_res[sym] = {"symbol": sym, "error": str(exc), "asia_valid": False}
-
-    # Strategy #2: XAUUSD $10 Psychological Level Retest (With-Trend EMA20/EMA50 + Split TP)
-    try:
-        xau_bars, xau_src = fetch_market_bars("XAUUSD")
-        markets_res["XAUUSD_PSYCH"] = evaluate_xau_psych_strategy(
-            xau_bars, xau_src, now_alg, state, news_blocked, news_msg, bot_token, chat_id, dry_run
-        )
-    except Exception as exc:
-        markets_res["XAUUSD_PSYCH"] = {"symbol": "XAUUSD_PSYCH", "error": str(exc), "asia_valid": False}
+    manager = ManagerAgent(MARKET_SPECS, fetch_market_bars, calculate_lot_for_25_risk)
+    proposals = manager.collect_proposals(now_alg)
+    _resolve_active_signals(proposals, state)
 
     if state["losses_today"] >= 2 or state["realized_pnl"] <= -50.0:
         state["stopped_two_losses"] = True
     if state["realized_pnl"] >= 80.0:
         state["stopped_profit_cap"] = True
 
+    approved = manager.audit_and_approve(proposals, now_alg, state, news_blocked, news_msg)
+
+    for prop in approved:
+        sym = prop["symbol"]
+        tg_msg = prop["telegram_message"]
+        if not dry_run and bot_token and chat_id:
+            _, info = send_telegram_text(bot_token, chat_id, tg_msg)
+            prop["telegram_delivery"] = info
+        else:
+            prop["telegram_delivery"] = f"dry_run={dry_run}"
+
+        log_cloud_signal_to_db(
+            {
+                "symbol": sym,
+                "ts": prop["closed_bar_ts"],
+                "dir": prop["proposed_dir"],
+                "entry": prop["entry"],
+                "sl": prop["sl"],
+                "tp": prop["tp2"],
+                "lot": prop["lot"],
+                "ema50": prop["ema50"],
+                "rsi14": prop["rsi14"],
+                "asia_high": prop["asia_high"],
+                "asia_low": prop["asia_low"],
+                "prev_size": prop["prev_candle_size"],
+            },
+            tg_msg,
+        )
+
+        if not dry_run:
+            state["alerts_today"] += 1
+            state["last_alert_bar_by_sym"][sym] = prop["closed_bar_ts"]
+            state["active_signals"].append(
+                {
+                    "symbol": sym,
+                    "dir": prop["proposed_dir"],
+                    "entry": prop["entry"],
+                    "sl": prop["sl"],
+                    "tp1": prop["tp1"],
+                    "tp": prop["tp2"],
+                    "hit_tp1": False,
+                    "resolved": False,
+                }
+            )
+
     if state["stopped_two_losses"] and not state["sent_two_loss_msg"] and not dry_run:
         if bot_token and chat_id:
             send_telegram_text(bot_token, chat_id, "Stop for today. 2 losses reached. Come back tomorrow.")
         state["sent_two_loss_msg"] = True
 
+    # Sanitize proposals for JSON serialization (drop datetime bar_dt)
+    clean_agents: dict[str, dict] = {}
+    for sym, p in proposals.items():
+        clean_agents[sym] = {k: v for k, v in p.items() if k != "bar_dt"}
+
     is_weekday = now_alg.weekday() < 5
-    # Send automatic 06:00 morning briefing on first weekday scan in 06:00-06:45 Algiers Time
     if (
         (is_weekday and now_alg.hour == 6 and now_alg.minute <= 45 and not state["sent_morning_brief"] and not dry_run)
         or send_brief_now
     ):
         if bot_token and chat_id:
-            brief = _format_briefing_message(now_alg, markets_res, news_msg)
+            brief = _format_briefing_message(now_alg, clean_agents, news_msg)
             send_telegram_text(bot_token, chat_id, brief)
         if not send_brief_now:
             state["sent_morning_brief"] = True
@@ -953,25 +1032,27 @@ def evaluate_once(
             send_telegram_text(
                 bot_token,
                 chat_id,
-                "No valid setup today (06:00-18:00) across XAUUSD, EURUSD, GBPUSD, US100, BTCUSD. No trade.",
+                "ManagerAgent Summary (18:00): No high-consensus setup today across 5 Market Agents. No trade.",
             )
         state["sent_no_setup_msg"] = True
 
     save_state(state)
 
-    gold = markets_res.get("XAUUSD", {})
+    gold = clean_agents.get("XAUUSD", {})
     summary = {
         "now_algiers": now_alg.strftime("%Y-%m-%d %H:%M:%S"),
-        "preset": "Multi-Market London Retest (XAUUSD, EURUSD, GBPUSD, US100, BTCUSD)",
+        "architecture": "5 Specialist Market Agents (12 Strategies each) -> 1 ManagerAgent",
+        "window_algiers": "06:00-18:00",
         "news_blocked": news_blocked,
         "news_status": news_msg,
         "alerts_today": state["alerts_today"],
         "losses_today": state["losses_today"],
         "realized_pnl": state["realized_pnl"],
-        "markets": markets_res,
+        "approved_count_this_scan": len(approved),
+        "agents": clean_agents,
         "close_price": gold.get("close_price"),
         "data_source": gold.get("data_source"),
-        "action_note": gold.get("action_note", "Scanned 5 markets"),
+        "action_note": gold.get("manager_decision", "Scanned 5 Market Agents"),
     }
     if status_report:
         print(json.dumps(summary, indent=2))
@@ -1051,39 +1132,41 @@ def _trigger_async_scan(strict_mode: bool = False) -> bool:
 
 
 def _render_dashboard_html(st: dict | None) -> str:
-    """Render a clean multi-market status dashboard."""
+    """Render a Multi-Agent Control Room HTML dashboard."""
     if not st:
-        body = "<p>Scanner warming up... Refresh or call <a href='/scan'>/scan</a>.</p>"
+        body = "<p>Multi-Agent System warming up... Refresh or call <a href='/scan'>/scan</a>.</p>"
     else:
         rows_html = []
-        for sym, m in st.get("markets", {}).items():
-            if m.get("error"):
-                rows_html.append(f"<tr><td>{sym}</td><td colspan='5'>Error: {m['error']}</td></tr>")
+        for sym, a in st.get("agents", {}).items():
+            if a.get("error"):
+                rows_html.append(f"<tr><td><b>{a.get('agent', sym)}</b></td><td colspan='6'>Error: {a['error']}</td></tr>")
             else:
+                agreed_txt = ", ".join(s.split("_", 1)[1] for s in a.get("agreed_strategies", [])[:4]) or "-"
                 rows_html.append(
-                    f"<tr><td><b>{sym}</b></td><td>{m['close_price']}</td><td>{m['ema50']}</td>"
-                    f"<td>{m['rsi14']}</td><td>{m['asia_low']} - {m['asia_high']} ({'VALID' if m['asia_valid'] else 'SKIP'})</td>"
-                    f"<td>{m['action_note']}</td></tr>"
+                    f"<tr><td><b>{a['agent']}</b></td><td>{a['close_price']}</td>"
+                    f"<td>BUY {a['buy_votes']}/12 | SELL {a['sell_votes']}/12</td>"
+                    f"<td>{a['rsi14']}</td><td>{a['adx']}</td><td>{agreed_txt}</td>"
+                    f"<td><b>{a.get('manager_decision', 'WAIT')}</b></td></tr>"
                 )
         body = (
             f"<p><b>Algiers Time (GMT+1):</b> {st['now_algiers']} | "
             f"<b>News:</b> {st['news_status']} | "
             f"<b>Alerts:</b> {st['alerts_today']}/2 | <b>Losses:</b> {st['losses_today']}/2 | "
             f"<b>PnL:</b> ${st['realized_pnl']:.2f}</p>"
-            f"<table><tr><th>Market</th><th>Price</th><th>EMA50</th><th>RSI14</th><th>Asia Range</th><th>Status</th></tr>"
+            f"<table><tr><th>Specialist Agent</th><th>Price</th><th>12-Strategy Vote</th><th>RSI14</th><th>ADX</th><th>Top Agreed</th><th>ManagerAgent Decision</th></tr>"
             f"{''.join(rows_html)}</table>"
         )
     return (
         "<!doctype html><html><head><meta charset='utf-8'>"
-        "<title>Multi-Market London Retest - Render Cloud Scanner</title>"
-        "<style>body{font-family:system-ui,sans-serif;background:#0e121a;color:#e5e7eb;padding:24px;max-width:960px;margin:auto;}"
-        "table{width:100%;border-collapse:collapse;margin:16px 0;}th,td{border:1px solid #2d3e58;padding:8px;text-align:left;font-size:14px;}"
+        "<title>Multi-Agent Trading Desk (5 Agents -> ManagerAgent)</title>"
+        "<style>body{font-family:system-ui,sans-serif;background:#0e121a;color:#e5e7eb;padding:24px;max-width:1100px;margin:auto;}"
+        "table{width:100%;border-collapse:collapse;margin:16px 0;}th,td{border:1px solid #2d3e58;padding:8px;text-align:left;font-size:13px;}"
         "th{background:#161d2b;color:#38bdf8;}a{color:#38bdf8;}</style></head><body>"
-        "<h2>Multi-Market London Retest (XAUUSD, EURUSD, GBPUSD, US100, BTCUSD)</h2>"
-        "<p>FTM/FTMO $5K Rules | Manual Entry Only | 06:00-18:00 Algiers Time | $25 Risk / $50 Reward</p>"
+        "<h2>Multi-Agent Trading Desk: 5 Market Agents (12 Strategies Each) -> ManagerAgent</h2>"
+        "<p>FTM/FTMO $5K Rules | Manual Entry Only | 06:00-18:00 Algiers Time | Min 7/12 Consensus | $25 Risk / $50 Reward</p>"
         f"{body}"
         "<p><a href='/scan'>Trigger /scan</a> | <a href='/scan-sync'>Sync /scan-sync</a> | "
-        "<a href='/test-telegram'>Send Telegram Briefing Test</a> | <a href='/health'>/health</a></p>"
+        "<a href='/test-telegram'>Send Telegram Briefing</a> | <a href='/health'>/health</a></p>"
         "</body></html>"
     )
 
