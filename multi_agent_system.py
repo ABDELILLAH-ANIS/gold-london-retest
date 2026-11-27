@@ -562,6 +562,23 @@ class ManagerAgent:
     MIN_AGREE_STRATEGIES = 8      # Requires >= 8/15 strategies agreeing (53%+ consensus)
     MIN_MARGIN_OVER_OPPOSE = 5    # Must beat opposite votes by at least 5 strategies
 
+    # Market-specific optimal liquidity windows (Algiers GMT+1) so BTC cannot steal early FX/Gold slots
+    MARKET_WINDOWS = {
+        "EURUSD": (8, 17),
+        "GBPUSD": (8, 17),
+        "XAUUSD": (8, 17),
+        "BTCUSD": (10, 17),
+        "US100": (13, 18),
+    }
+
+    MARKET_PRIORITY = {
+        "GBPUSD": 5,
+        "EURUSD": 5,
+        "XAUUSD": 4,
+        "US100": 3,
+        "BTCUSD": 2,
+    }
+
     def __init__(self, market_specs: dict, fetch_fn, lot_fn):
         self.market_specs = market_specs
         self.fetch_fn = fetch_fn
@@ -600,12 +617,17 @@ class ManagerAgent:
         today_date = now_alg.date()
         usd_dirs_taken: set[str] = set()
 
-        # Sort proposals by highest confidence first so the strongest setup wins daily slots
+        # Sort proposals by highest consensus, then market priority (FX/Gold preferred over BTC on ties)
         ranked = sorted(
             proposals.values(),
-            key=lambda p: (len(p.get("agreed_strategies", [])), p.get("adx", 0.0)),
+            key=lambda p: (
+                len(p.get("agreed_strategies", [])),
+                self.MARKET_PRIORITY.get(p.get("symbol", ""), 1),
+                p.get("adx", 0.0),
+            ),
             reverse=True,
         )
+        already_alerted_syms = set(state.get("symbols_alerted_today", []))
 
         for prop in ranked:
             sym = prop["symbol"]
@@ -614,16 +636,17 @@ class ManagerAgent:
                 continue
 
             bar_dt = prop["bar_dt"]
+            win_start, win_end = self.MARKET_WINDOWS.get(sym, (8, 17))
             in_window = (
                 bar_dt.date() == today_date
                 and bar_dt.weekday() < 5
-                and 6 <= bar_dt.hour < 18
+                and win_start <= bar_dt.hour < win_end
                 and (now_alg - bar_dt).total_seconds() <= 2700
             )
             spec = self.market_specs[sym]
 
             if not in_window:
-                prop["manager_decision"] = "WAIT: Outside 06:00-18:00 Algiers window"
+                prop["manager_decision"] = f"WAIT: Outside {sym} window ({win_start:02d}:00-{win_end:02d}:00 Algiers)"
                 continue
             if state.get("stopped_two_losses") or state.get("losses_today", 0) >= 2:
                 prop["manager_decision"] = "VETO: Daily stop reached (2 losses / -$50)"
@@ -633,6 +656,9 @@ class ManagerAgent:
                 continue
             if state.get("alerts_today", 0) + len(approved) >= 2:
                 prop["manager_decision"] = "VETO: Max 2 daily alerts reached"
+                continue
+            if sym in already_alerted_syms:
+                prop["manager_decision"] = f"VETO: Max 1 trade/day on {sym} already taken"
                 continue
             if news_blocked:
                 prop["manager_decision"] = f"VETO: High-Impact News ({news_msg})"

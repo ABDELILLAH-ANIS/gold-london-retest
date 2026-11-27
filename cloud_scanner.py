@@ -41,10 +41,10 @@ MARKET_SPECS: dict[str, dict] = {
         "min_breakout_body": 0.50,
         "retest_tol": 3.5,
         "sl_zone_depth": 3.5,
-        "max_candle": 10.0,
+        "max_candle": 12.0,
         "sl_buffer": 1.0,
-        "sl_min": 3.0,
-        "sl_max": 7.0,
+        "sl_min": 4.5,
+        "sl_max": 11.0,
         "rsi_buy_max": 68.0,
         "rsi_sell_min": 32.0,
         "contract_val": 100.0,
@@ -380,6 +380,7 @@ def load_state(today_key: str) -> dict:
         "sent_morning_brief": False,
         "sent_no_setup_msg": False,
         "last_alert_bar_by_sym": {},
+        "symbols_alerted_today": [],
         "used_psych_levels": [],
     }
     if os.path.exists(STATE_PATH):
@@ -987,6 +988,8 @@ def evaluate_once(
         if not dry_run:
             state["alerts_today"] += 1
             state["last_alert_bar_by_sym"][sym] = prop["closed_bar_ts"]
+            if sym not in state["symbols_alerted_today"]:
+                state["symbols_alerted_today"].append(sym)
             state["active_signals"].append(
                 {
                     "symbol": sym,
